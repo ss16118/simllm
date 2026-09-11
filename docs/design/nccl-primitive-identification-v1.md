@@ -7,6 +7,14 @@ TRAF-94 owns the runner, source-conformance pilot and hardware execution.
 This document is the experiment design, not a completed measurement campaign.
 TRAF-93 supplies the buffered-read execution path that consumes its findings.
 
+The runner implementation and its hardware-executable boundary are documented
+in
+[`IMPLEMENTATION.md`](../../examples/nccl_primitive_identification_v1/IMPLEMENTATION.md)
+and
+[`PROBE_CONTRACT.md`](../../examples/nccl_primitive_identification_v1/PROBE_CONTRACT.md).
+An H100 campaign uses the explicit `h100-extension.json`; it remains blocked
+from ordinary timing until the pinned source-faithful capability pilot passes.
+
 ## Source and experiment identity
 
 Pin NCCL commit `7b83616df3ae082a1f32bb74c27458bfe8153a13`, compiler options,

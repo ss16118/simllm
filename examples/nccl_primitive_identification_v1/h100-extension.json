@@ -1,0 +1,18 @@
+{
+  "schema": "simllm-nccl-primitive-architecture-extension-v1",
+  "status": "planned_capability_not_yet_frozen",
+  "base_manifest_digest": "dcb481d70a436b2b82f8091cefceff0d5363ab026eb55886cd1ba470cccb9823",
+  "architectures": [
+    {
+      "id": "h100",
+      "name_pattern": "NVIDIA H100 80GB HBM3",
+      "compute_capability": "9.0",
+      "minimum_gpu_count": 4,
+      "required_peer_topology": "single-node all-peer NVLink/NVSwitch",
+      "observed_node_note": "The development node reports eight H100 80GB HBM3 GPUs and NV18 for every GPU pair. This note is not capability evidence."
+    }
+  ],
+  "source_commit": "7b83616df3ae082a1f32bb74c27458bfe8153a13",
+  "qualification_rule": "The source-faithful probe, realized geometry, peer access, and local timers must pass before any H100 cell enters ordinary timing.",
+  "claim_boundary": "H100 is an explicit extension and must not be labeled A100 or GH200."
+}

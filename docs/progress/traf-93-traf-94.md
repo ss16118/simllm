@@ -44,18 +44,19 @@ The normative inputs are:
 
 ## TRAF-94 checklist
 
-- [ ] Define the expanded-cell representation and deterministic manifest digest.
-- [ ] Implement sequential stage expansion rather than a blind Cartesian
+- [x] Define the expanded-cell representation and deterministic manifest digest.
+- [x] Implement sequential stage expansion rather than a blind Cartesian
   product.
-- [ ] Implement required result-row validation and explicit qualification
+- [x] Implement required result-row validation and explicit qualification
   reasons.
 - [ ] Implement already-ready, delayed-publication, delayed-consumption,
   empty/nonempty, copy/reduction and working-set primitive probes.
 - [ ] Add channel/warp/SM resource-sharing probes after the one-channel pilot.
-- [ ] Keep diagnostic source-operation counts separate from ordinary timing.
-- [ ] Capture requested and realized controls, source/build/device identity,
+- [x] Keep diagnostic source-operation counts separate from ordinary timing in
+  the runner/probe contract. The device probe still has to emit the counts.
+- [x] Capture requested and realized controls, source/build/device identity,
   local timer boundaries, correctness and process exits.
-- [ ] Implement five-process completeness, paired-IQR resolution and held-out
+- [x] Implement five-process completeness, paired-IQR resolution and held-out
   prediction checks.
 - [ ] Freeze the capability-qualified expanded H100 inventory before ordinary
   timing. H100 is an extension; it is not silently labeled A100 or GH200.
@@ -71,12 +72,43 @@ The normative inputs are:
 | 2026-09-11 | `traf-93-simple-read` | Final combined packet/NCCL regression (`PYTHONPATH=. .venv/bin/pytest -q ...`) | 370 passed in 14.89 seconds. |
 | 2026-09-11 | `traf-93-simple-read` | `nccl_simple_read_v1/run_study.py` | All fatal guards valid: 9 isolated-read, 6 remote-memory, 288 collective and 32 graph-metric rows. |
 | 2026-09-11 | `traf-93-simple-read` | Ruff over every changed Python file; `git diff --check` | Passed. |
+| 2026-09-11 | `traf-94-primitive-measurements` | H100 planned expansion | 848 sequential timing cells and 32 source-specialization capability pilots; planned inventory digest `8dc3ac3ca36bfa42b70c52ea21d601fc88273d7a9b24b54de632321189bbb1b4`. |
+| 2026-09-11 | `traf-94-primitive-measurements` | Local H100 environment audit | Not qualified: working NCCL checkout is at the wrong commit and dirty; installed NCCL 2.30.7 lacks a verified binding to the pinned 2.31.2 source. No timing launched. |
+| 2026-09-11 | `traf-94-primitive-measurements` | Matrix, qualification, schedule, mock process, artifact collection, completeness, paired-IQR and holdout tests | 8 passed in 1.05 seconds. Mock evidence is test-only and carries no hardware claim. |
+| 2026-09-11 | `traf-94-primitive-measurements` | Repository-wide pytest attempt | Interrupted during a long study section after 2,144 passed and 14 skipped. One failure was a generic `run_study` module-name collision introduced by the new test and is fixed; its exact regression test now passes. The other was an environment-dependent system-`pip` wheel build and passes when the virtual-environment `pip` is first on `PATH`. |
+| 2026-09-11 | `traf-94-primitive-measurements` | Combined TRAF-93/TRAF-94 and discovered-regression set with venv `pip` on `PATH` | 380 passed in 17.41 seconds; Ruff and `git diff --check` passed. |
+| 2026-09-11 | `traf-94-primitive-measurements` | Clean pinned NCCL build for `sm_90` | NCCL 2.31.2 built successfully from `7b83616df3ae082a1f32bb74c27458bfe8153a13`; library SHA-256 `57161bd381053afad3fab8a717caafe472e6dbbe24e751828930d281bd2f50b9`. |
+| 2026-09-11 | `traf-94-primitive-measurements` | Build-record plus clean H100 environment audit | Capability-build gate passed; build-record digest `f801de5f55ef02167fe63816a8ae406fe5ca6f9309a3bb550d1ccab0b71aadd2`. This is not primitive capability or timing evidence. |
 
 ## Commands
 
 Commands and exact results will be added here as implementation gates run. Raw
 hardware captures must remain outside Git; only compact summaries and their
 content-hash manifest belong in the repository.
+
+TRAF-94 planning/audit commands run on 2026-09-11:
+
+```bash
+python examples/nccl_primitive_identification_v1/audit_environment.py \
+  --extension examples/nccl_primitive_identification_v1/h100-extension.json \
+  --source /home/siyshen/workspace/nccl \
+  --library /lib/x86_64-linux-gnu/libnccl.so \
+  --output /tmp/traf94-h100-environment-audit.json
+
+python examples/nccl_primitive_identification_v1/run_study.py plan \
+  --architecture-extension examples/nccl_primitive_identification_v1/h100-extension.json \
+  --output /tmp/traf94-h100-planned.json
+
+python examples/nccl_primitive_identification_v1/run_study.py capability-plan \
+  --inventory /tmp/traf94-h100-planned.json \
+  --output /tmp/traf94-h100-capabilities.jsonl
+```
+
+The planned inventory file's byte hash is
+`798da79003759346505140aa2b9716043a24d433a622ba9e5801c9857aa41851`;
+its canonical self-digest is the value recorded in the verification table.
+The 32-line capability-request file's byte hash is
+`2293ac3c677af45d8dae3eaadd1d13fc95dd9b6f04d69067530f6a11794fac5b`.
 
 ## Handoff notes for future engineers and agents
 
