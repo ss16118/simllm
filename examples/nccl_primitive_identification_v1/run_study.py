@@ -23,6 +23,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
 
+from examples.nccl_primitive_identification_v1.analysis import (
+    fit_identification,
+    score_confirmations,
+)
 from examples.nccl_primitive_identification_v1.matrix import (
     CAPABILITY_SCHEMA,
     canonical_json_bytes,
@@ -634,6 +638,78 @@ def validate_command(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
+def _complete_rows(
+    *, rows_path: Path, manifest: Mapping[str, Any], inventory: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], str]:
+    """Load one complete campaign and return rows plus their immutable hash."""
+
+    rows = _read_jsonl(rows_path)
+    failures = completeness_failures(rows, manifest, inventory)
+    if failures:
+        raise ValueError("campaign rows failed completeness: " + "; ".join(failures))
+    return rows, hashlib.sha256(rows_path.read_bytes()).hexdigest()
+
+
+def fit_command(args: argparse.Namespace) -> None:
+    """Lock identification parameters without consuming confirmation values."""
+
+    manifest = load_manifest(args.manifest)
+    inventory = _load_inventory(args.inventory, required_state="capability_qualified")
+    rows, observations_sha256 = _complete_rows(
+        rows_path=args.rows, manifest=manifest, inventory=inventory
+    )
+    fit = fit_identification(
+        rows,
+        inventory=inventory,
+        manifest=manifest,
+        observations_sha256=observations_sha256,
+    )
+    _write_json(args.output, fit)
+    print(
+        json.dumps(
+            {
+                "status": "complete",
+                "fit_digest": fit["fit_digest"],
+                "identification_anchors": len(fit["anchors"]),
+                "paired_contrasts": len(fit["paired_contrasts"]),
+                "confirmation_rows_used": fit["confirmation_rows_used"],
+                "output": str(args.output),
+            },
+            indent=2,
+        )
+    )
+
+
+def score_command(args: argparse.Namespace) -> None:
+    """Open held-out cells only after loading a self-digested locked fit."""
+
+    manifest = load_manifest(args.manifest)
+    inventory = _load_inventory(args.inventory, required_state="capability_qualified")
+    rows, observations_sha256 = _complete_rows(
+        rows_path=args.rows, manifest=manifest, inventory=inventory
+    )
+    fit = json.loads(args.fit.read_text(encoding="utf-8"))
+    score = score_confirmations(
+        rows,
+        inventory=inventory,
+        manifest=manifest,
+        fit=fit,
+        observations_sha256=observations_sha256,
+    )
+    _write_json(args.output, score)
+    print(
+        json.dumps(
+            {
+                "status": "complete",
+                "score_digest": score["score_digest"],
+                **score["summary"],
+                "output": str(args.output),
+            },
+            indent=2,
+        )
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -696,6 +772,25 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument("--rows", type=Path, required=True)
     validate.add_argument("--output", type=Path)
     validate.set_defaults(function=validate_command)
+
+    fit = subparsers.add_parser(
+        "fit", help="fit and lock parameters from identification cells only"
+    )
+    fit.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    fit.add_argument("--inventory", type=Path, required=True)
+    fit.add_argument("--rows", type=Path, required=True)
+    fit.add_argument("--output", type=Path, required=True)
+    fit.set_defaults(function=fit_command)
+
+    score = subparsers.add_parser(
+        "score", help="score held-out confirmation deltas against a locked fit"
+    )
+    score.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    score.add_argument("--inventory", type=Path, required=True)
+    score.add_argument("--rows", type=Path, required=True)
+    score.add_argument("--fit", type=Path, required=True)
+    score.add_argument("--output", type=Path, required=True)
+    score.set_defaults(function=score_command)
     return parser
 
 

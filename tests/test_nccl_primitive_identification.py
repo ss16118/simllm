@@ -14,8 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 STUDY = ROOT / "examples" / "nccl_primitive_identification_v1"
 
 from examples.nccl_primitive_identification_v1.analysis import (
+    fit_identification,
     paired_contrast,
+    predict_confirmation_cell,
     score_confirmation,
+    score_confirmations,
 )
 from examples.nccl_primitive_identification_v1.matrix import (
     CAPABILITY_SCHEMA,
@@ -339,6 +342,155 @@ def test_paired_iqr_and_heldout_rules_use_process_summaries():
         )["accepted"]
         is False
     )
+
+
+def test_identification_fit_locks_before_confirmation_scoring():
+    """Exercise the two-step fit/score boundary with a compact synthetic grid."""
+
+    def cell(identity, stage, family, **controls):
+        request = {
+            "stage": stage,
+            "protocol": "LL",
+            "simple_placement": "source_default",
+            "ranks": 2,
+            "active_channels": 1,
+            "available_sms": 16,
+            "working_warps": 8,
+            **controls,
+        }
+        return {
+            "cell_id": identity,
+            "stage": stage,
+            "family": family,
+            "protocol": "LL",
+            "simple_placement": "source_default",
+            "requested": request,
+        }
+
+    cells = []
+    for delay in (0, 4096):
+        cells.extend(
+            [
+                cell(
+                    f"ready-{delay}-a",
+                    "ready_publication",
+                    "already_ready",
+                    delay_cycles=delay,
+                    useful_bytes=16,
+                ),
+                cell(
+                    f"ready-{delay}-b",
+                    "ready_publication",
+                    "delayed_publication",
+                    delay_cycles=delay,
+                    useful_bytes=16,
+                ),
+            ]
+        )
+    for useful_bytes in (0, 1920):
+        cells.append(
+            cell(
+                f"data-{useful_bytes}",
+                "data_work",
+                "sum",
+                useful_bytes=useful_bytes,
+                working_set="reused",
+            )
+        )
+    for channels in (1, 8, 32):
+        cells.append(
+            cell(
+                f"sharing-{channels}",
+                "sharing",
+                "sum",
+                active_channels=channels,
+                useful_bytes_per_channel=1920,
+            )
+        )
+    confirmation = [
+        cell(
+            f"confirmation-{delay}",
+            "confirmation",
+            "confirmation",
+            active_channels=2,
+            useful_bytes_per_channel=1924,
+            delay_cycles=delay,
+        )
+        for delay in (512, 2048)
+    ]
+    inventory = {
+        "manifest_digest": "1" * 64,
+        "inventory_digest": "2" * 64,
+        "cells": cells + confirmation,
+    }
+    manifest = {
+        "ordinary_processes_per_cell": 5,
+        "timing_boundaries": ["same_device_interval"],
+        "resolved_contrast": "abs(paired_median_delta) > 2*(IQR_A+IQR_B)",
+        "confirmation_error_bound": (
+            "max(0.10*abs(measured_delta), frozen_repeat_spread_resolution)"
+        ),
+    }
+
+    durations = {}
+    for item in cells:
+        if item["stage"] == "ready_publication":
+            delay = item["requested"]["delay_cycles"]
+            durations[item["cell_id"]] = 1_000 + (
+                2 * delay if item["family"] == "delayed_publication" else 0
+            )
+        elif item["stage"] == "data_work":
+            durations[item["cell_id"]] = 2_000 + item["requested"]["useful_bytes"]
+        else:
+            durations[item["cell_id"]] = 4_000 + 1_000 * item["requested"]["active_channels"]
+
+    def synthetic_rows(selected, values):
+        result = []
+        for item in selected:
+            for process in range(5):
+                for repetition in range(3):
+                    result.append(
+                        {
+                            "cell_id": item["cell_id"],
+                            "process_id": process,
+                            "repetition": repetition,
+                            "timer": "same_device_interval",
+                            "units": "ns",
+                            "raw_duration": values[item["cell_id"]] + process,
+                            "phase": "ordinary",
+                            "qualification": "qualified",
+                        }
+                    )
+        return result
+
+    identification_rows = synthetic_rows(cells, durations)
+    fit = fit_identification(
+        identification_rows,
+        inventory=inventory,
+        manifest=manifest,
+        observations_sha256="3" * 64,
+    )
+    assert fit["confirmation_rows_used"] == 0
+    assert fit["fit_scope"] == "identification_cells_only"
+    assert fit["publication_response"]
+
+    predictions = {
+        item["cell_id"]: predict_confirmation_cell(
+            fit, item, timer="same_device_interval"
+        )["predicted_ns"]
+        for item in confirmation
+    }
+    all_rows = identification_rows + synthetic_rows(confirmation, predictions)
+    score = score_confirmations(
+        all_rows,
+        inventory=inventory,
+        manifest=manifest,
+        fit=fit,
+        observations_sha256="3" * 64,
+    )
+    assert score["summary"]["resolved_interventions"] == 1
+    assert score["summary"]["accepted_resolved_interventions"] == 1
+    assert score["summary"]["all_resolved_interventions_accepted"] is True
 
 
 def test_cli_writes_h100_plan_and_minimal_capability_plan(tmp_path):

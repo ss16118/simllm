@@ -9,8 +9,10 @@
   capability grouping, row guards, full-campaign completeness, and the causal
   inner-device-within-outer-CUDA-event timer disposition.
 - `analysis.py` owns the five-process paired-IQR rule and held-out prediction
-  bound. It intentionally works on process medians rather than treating all
-  iterations as independent samples.
+  bound, the identification-only component profile, and the locked held-out
+  scorer. It intentionally works on process medians rather than treating all
+  iterations as independent samples. `ANALYSIS_DESIGN.md` states the candidate
+  equation, source-transfer assumptions, uncertainty rule, and claim boundary.
 - `record_build.py` binds either a clean pinned checkout or its exactly named
   versioned instrumentation patch, the build command, compiler versions,
   source-file hashes, and output library bytes into one self-digested record.
@@ -136,6 +138,17 @@ python examples/nccl_primitive_identification_v1/run_study.py validate \
   --inventory /capture/qualified-inventory.json \
   --rows /capture/observations.jsonl \
   --output /capture/validation.json
+
+python examples/nccl_primitive_identification_v1/run_study.py fit \
+  --inventory /capture/qualified-inventory.json \
+  --rows /capture/observations.jsonl \
+  --output /capture/identified-parameters.json
+
+python examples/nccl_primitive_identification_v1/run_study.py score \
+  --inventory /capture/qualified-inventory.json \
+  --rows /capture/observations.jsonl \
+  --fit /capture/identified-parameters.json \
+  --output /capture/confirmation-score.json
 ```
 
 Each `run-one --work-index N` command is independent and can be assigned to a
