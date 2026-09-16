@@ -1,6 +1,6 @@
 {
   "schema": "simllm-nccl-primitive-identification-plan-v1",
-  "status": "design_frozen_runner_and_hardware_pending",
+  "status": "design_frozen_runner_implemented_hardware_campaign_pending",
   "owner_task": "TRAF-94",
   "source_commit": "7b83616df3ae082a1f32bb74c27458bfe8153a13",
   "architectures": ["a100", "gh200"],
@@ -15,7 +15,7 @@
     {"id": "reuse", "family": ["delayed_consumption"], "delay_cycles": [0, 256, 1024, 4096], "reservations": [1, 4, 8, 9, 17], "useful_bytes": [16, 1920]},
     {"id": "data_work", "family": ["copy", "sum"], "useful_bytes": [0, 4, 16, 120, 256, 1920, 32768], "working_set": ["reused", "rotating_64MiB"]},
     {"id": "sharing", "family": ["copy", "sum"], "active_channels": [1, 8, 32], "available_sms": [8, 16, 32, "full"], "working_warps": "protocol_grid", "useful_bytes_per_channel": [1920]},
-    {"id": "confirmation", "role": "held_out_after_parameter_lock", "ranks": [2, 4], "active_channels": [2, 12], "available_sms": [16, "full"], "useful_bytes_per_channel": [124, 1924, 32772], "delay_cycles": [512, 2048]}
+    {"id": "confirmation", "family": "confirmation", "role": "held_out_after_parameter_lock", "ranks": [2, 4], "active_channels": [2, 12], "available_sms": [16, "full"], "useful_bytes_per_channel": [124, 1924, 32772], "delay_cycles": [512, 2048]}
   ],
   "ordinary_processes_per_cell": 5,
   "warmup_iterations": 20,

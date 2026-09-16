@@ -30,6 +30,10 @@ from examples.nccl_primitive_identification_v1.matrix import (
     validate_inventory,
     validate_observation,
 )
+from examples.nccl_primitive_identification_v1.probe import (
+    _native_arguments,
+    _qualification_failures,
+)
 from examples.nccl_primitive_identification_v1.run_study import _schedule
 
 
@@ -44,7 +48,9 @@ def test_h100_expansion_is_sequential_deterministic_and_source_explicit(manifest
 
     assert first == second
     assert len(first) == 848
-    assert len(capability_keys(first)) == 32
+    # Capability identities include every support-sensitive control.  A single
+    # easy representative must not qualify untested channel/warp/SM geometry.
+    assert len(capability_keys(first)) == 388
     assert Counter(cell.stage for cell in first) == {
         "ready_publication": 96,
         "reuse": 160,
@@ -52,6 +58,14 @@ def test_h100_expansion_is_sequential_deterministic_and_source_explicit(manifest
         "sharing": 288,
         "confirmation": 192,
     }
+    assert {cell.family for cell in first if cell.stage == "confirmation"} == {"confirmation"}
+    assert all(isinstance(cell.family, str) for cell in first)
+    assert all(cell.requested["stage"] == cell.stage for cell in first)
+    assert all(
+        "useful_bytes" not in cell.requested
+        for cell in first
+        if "useful_bytes_per_channel" in cell.requested
+    )
     assert {cell.simple_placement for cell in first if cell.protocol == "SIMPLE"} == {
         "buffered",
         "buffered_read",
@@ -62,11 +76,16 @@ def test_h100_expansion_is_sequential_deterministic_and_source_explicit(manifest
     # A ready-publication cell must not accidentally inherit the reuse stage's
     # reservation axis.  This is the regression that a global Cartesian product
     # would trigger.
-    assert all("reservations" not in cell.requested for cell in first if cell.stage == "ready_publication")
+    assert all(
+        "reservations" not in cell.requested for cell in first if cell.stage == "ready_publication"
+    )
 
 
 def test_manifest_and_inventory_digests_reject_semantic_edits(manifest):
-    assert content_digest(manifest) == "dcb481d70a436b2b82f8091cefceff0d5363ab026eb55886cd1ba470cccb9823"
+    assert (
+        content_digest(manifest)
+        == "4427e867baae52901e0801822f687a53c99ffb8a6d1e0763e6a1aaeafdd809c2"
+    )
     cells = expand_manifest(manifest, architectures=("h100",))
     inventory = inventory_document(manifest, cells, state="planned")
     validate_inventory(inventory)
@@ -88,8 +107,7 @@ def _capability_rows(cells, *, failed_key=None, identity_digest="1" * 64):
             "identity_digest": identity_digest,
             "realized": {"working_warps": 5},
             "source_operation_counts": {
-                name: int(name == "readiness_checks")
-                for name in REQUIRED_SOURCE_COUNTS
+                name: int(name == "readiness_checks") for name in REQUIRED_SOURCE_COUNTS
             },
         }
 
@@ -108,8 +126,7 @@ def test_capability_freeze_retains_failure_and_excludes_affected_cells(manifest)
     assert qualified["state"] == "capability_qualified"
     assert qualified["cell_count"] == len(cells) - affected
     failure = next(
-        row for row in qualified["capability_outcomes"]
-        if row["capability_key"] == failed_key
+        row for row in qualified["capability_outcomes"] if row["capability_key"] == failed_key
     )
     assert failure["qualified"] is False
     assert failure["reason"] == "source_specialization_unsupported"
@@ -173,15 +190,17 @@ def test_paired_iqr_and_heldout_rules_use_process_summaries():
     for process in range(5):
         for repetition in range(3):
             for cell, duration in (("a", 100 + process), ("b", 130 + process)):
-                rows.append({
-                    "cell_id": cell,
-                    "process_id": process,
-                    "repetition": repetition,
-                    "timer": "cuda_event",
-                    "phase": "ordinary",
-                    "qualification": "qualified",
-                    "raw_duration": duration,
-                })
+                rows.append(
+                    {
+                        "cell_id": cell,
+                        "process_id": process,
+                        "repetition": repetition,
+                        "timer": "cuda_event",
+                        "phase": "ordinary",
+                        "qualification": "qualified",
+                        "raw_duration": duration,
+                    }
+                )
     contrast = paired_contrast(
         rows,
         cell_a="a",
@@ -193,16 +212,22 @@ def test_paired_iqr_and_heldout_rules_use_process_summaries():
     assert contrast["resolved"] is True
     assert contrast["interpretation"] == "separate_term"
 
-    assert score_confirmation(
-        measured_delta=20,
-        predicted_delta=18,
-        frozen_repeat_spread_resolution=1,
-    )["accepted"] is True
-    assert score_confirmation(
-        measured_delta=20,
-        predicted_delta=17,
-        frozen_repeat_spread_resolution=1,
-    )["accepted"] is False
+    assert (
+        score_confirmation(
+            measured_delta=20,
+            predicted_delta=18,
+            frozen_repeat_spread_resolution=1,
+        )["accepted"]
+        is True
+    )
+    assert (
+        score_confirmation(
+            measured_delta=20,
+            predicted_delta=17,
+            frozen_repeat_spread_resolution=1,
+        )["accepted"]
+        is False
+    )
 
 
 def test_cli_writes_h100_plan_and_minimal_capability_plan(tmp_path):
@@ -243,17 +268,107 @@ def test_cli_writes_h100_plan_and_minimal_capability_plan(tmp_path):
     )
     assert completed.returncode == 0, completed.stderr
     requests = [json.loads(line) for line in capabilities.read_text().splitlines()]
-    assert len(requests) == 32
-    assert len({row["capability_key"] for row in requests}) == 32
+    assert len(requests) == 388
+    assert len({row["capability_key"] for row in requests}) == 388
+    assert all(isinstance(row["requested"], dict) for row in requests)
+    assert all(row["requested"]["stage"] == row["stage"] for row in requests)
+    # Group-equivalent delay cells use the strongest member as their pilot.
+    assert max(row["requested"].get("delay_cycles", 0) for row in requests) == 4096
+
+
+def test_native_request_carries_stage_and_empty_direct_read_uses_placement_evidence(
+    manifest,
+):
+    cell = next(
+        cell
+        for cell in expand_manifest(manifest, architectures=("h100",))
+        if cell.stage == "ready_publication"
+        and cell.protocol == "SIMPLE"
+        and cell.simple_placement == "buffered_read"
+        and cell.requested["useful_bytes"] == 0
+        and cell.family == "already_ready"
+    )
+    arguments = _native_arguments(
+        {"native_executable": "/tmp/not-run"},
+        family=cell.family,
+        requested=cell.requested,
+        diagnostic=True,
+        warmups=2,
+        iterations=1,
+    )
+    assert arguments[arguments.index("--stage") + 1] == "ready_publication"
+
+    sharing = next(
+        candidate
+        for candidate in expand_manifest(manifest, architectures=("h100",))
+        if candidate.stage == "sharing"
+        and candidate.protocol == "LL"
+        and candidate.requested["active_channels"] == 8
+    )
+    sharing_arguments = _native_arguments(
+        {"native_executable": "/tmp/not-run"},
+        family=sharing.family,
+        requested=sharing.requested,
+        diagnostic=True,
+        warmups=2,
+        iterations=1,
+    )
+    assert sharing_arguments[sharing_arguments.index("--useful-bytes") + 1] == str(
+        sharing.requested["useful_bytes_per_channel"] * 8
+    )
+
+    working_threads = 32 * cell.requested["working_warps"]
+    native = {
+        "correctness": True,
+        "canary_ok": True,
+        "unsupported_site": 0,
+        "samples": {
+            "same_device_interval": [1],
+            "observed_local_delay": [0],
+        },
+        "counts": {
+            name: int(
+                name
+                in {
+                    "readiness_checks",
+                    "successful_observations",
+                    "consumed_steps",
+                    "head_publications",
+                }
+            )
+            for name in REQUIRED_SOURCE_COUNTS
+        }
+        | {"unsuccessful_checks": 0},
+        "realized": {
+            "protocols": [3, 3],
+            "working_warps": [cell.requested["working_warps"]] * 2,
+            "block_threads": [working_threads + 32, working_threads],
+            "active_channels": [1, 1],
+            "channel_masks": [1, 1],
+            "placement_masks": [1 << 2, 1 << 2],
+            "recv_peers": [[-1] * 32, [0] + [-1] * 31],
+            "send_peers": [[1] + [-1] * 31, [-1] * 32],
+            "granted_sms": [132, 132],
+            "resident_sms": [1, 1],
+            "input_pointer_distinct": [1, 1],
+            "input_pointer_span_bytes": [0, 0],
+        },
+    }
+    # Empty work must prove DirectRead from source flags while all payload-byte
+    # counters remain zero; demanding remote_read_bytes > 0 would contradict
+    # the empty/nonempty intervention itself.
+    assert _qualification_failures(cell.family, cell.requested, native, require_counts=True) == []
 
 
 def test_schedule_keeps_matched_families_adjacent_and_counterbalanced(manifest):
     small = _small_contract(manifest)
-    small["stages"] = [{
-        "id": "data_work",
-        "family": ["copy", "sum"],
-        "useful_bytes": [16, 32],
-    }]
+    small["stages"] = [
+        {
+            "id": "data_work",
+            "family": ["copy", "sum"],
+            "useful_bytes": [16, 32],
+        }
+    ]
     cells = expand_manifest(small, architectures=("h100",))
     inventory = inventory_document(small, cells, state="capability_qualified")
     first = _schedule(inventory, small)
@@ -266,7 +381,8 @@ def test_schedule_keeps_matched_families_adjacent_and_counterbalanced(manifest):
         position = {row["cell_id"]: row["order_position"] for row in work}
         for cell in cells:
             partner = next(
-                candidate for candidate in cells
+                candidate
+                for candidate in cells
                 if candidate.family != cell.family
                 and candidate.protocol == cell.protocol
                 and candidate.simple_placement == cell.simple_placement

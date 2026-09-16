@@ -10,15 +10,20 @@
 - `analysis.py` owns the five-process paired-IQR rule and held-out prediction
   bound. It intentionally works on process medians rather than treating all
   iterations as independent samples.
-- `record_build.py` binds a clean pinned checkout, the exact build command,
-  compiler versions, source-file hashes, and output library bytes into one
-  self-digested provenance record.
+- `record_build.py` binds either a clean pinned checkout or its exactly named
+  versioned instrumentation patch, the build command, compiler versions,
+  source-file hashes, and output library bytes into one self-digested record.
 - `audit_environment.py` performs a cheap pre-pilot source/build/device/topology
   audit. Passing it permits a capability build; it is not primitive capability.
 - `run_study.py` writes planned and qualified inventories, builds the process
   schedule, invokes one external probe work item, retains stdout/stderr, hashes
   artifacts, and validates merged raw rows.
 - `PROBE_CONTRACT.md` defines the required source-faithful CUDA/NCCL executable.
+- `nccl-2.31.2-traf94.patch` is the reviewable instrumentation/intervention
+  patch for the pinned source, and `SOURCE_PROBE_DESIGN.md` maps each frozen
+  family to the exact native execution path.
+- `primitive_probe.cu`, `build_probe.py`, and `probe.py` provide the native
+  executable, provenance-bound build, and strict contract adapter.
 
 ## State machine
 
@@ -56,6 +61,7 @@ python examples/nccl_primitive_identification_v1/record_build.py \
   --source /path/to/clean/pinned/nccl \
   --library /path/to/clean/pinned/nccl/build/lib/libnccl.so.2.31.2 \
   --build-command 'make -j8 src.build CUDA_HOME=/usr/local/cuda NVCC_GENCODE=...' \
+  --instrumentation-patch examples/nccl_primitive_identification_v1/nccl-2.31.2-traf94.patch \
   --output /capture/nccl-build-record.json
 
 python examples/nccl_primitive_identification_v1/audit_environment.py \
@@ -64,6 +70,13 @@ python examples/nccl_primitive_identification_v1/audit_environment.py \
   --library /path/to/clean/pinned/nccl/build/lib/libnccl.so.2.31.2 \
   --build-record /capture/nccl-build-record.json \
   --output /capture/environment-audit.json
+
+python examples/nccl_primitive_identification_v1/build_probe.py \
+  --source /path/to/instrumented/pinned/nccl \
+  --build-record /capture/nccl-build-record.json \
+  --output-dir /capture/probe-build
+
+export TRAF94_PROBE_CONFIG=/capture/probe-build/probe-build.json
 
 python examples/nccl_primitive_identification_v1/run_study.py plan \
   --architecture-extension examples/nccl_primitive_identification_v1/h100-extension.json \
@@ -75,7 +88,7 @@ python examples/nccl_primitive_identification_v1/run_study.py capability-plan \
 
 python examples/nccl_primitive_identification_v1/run_study.py run-capabilities \
   --capability-plan /capture/capability-requests.jsonl \
-  --probe /path/to/source-faithful-probe \
+  --probe examples/nccl_primitive_identification_v1/probe.py \
   --build-record /capture/nccl-build-record.json \
   --output /capture/capability-artifacts \
   --results /capture/capabilities.jsonl
@@ -92,7 +105,7 @@ python examples/nccl_primitive_identification_v1/run_study.py schedule \
 python examples/nccl_primitive_identification_v1/run_study.py run-one \
   --inventory /capture/qualified-inventory.json \
   --schedule /capture/schedule.json \
-  --probe /path/to/source-faithful-probe \
+  --probe examples/nccl_primitive_identification_v1/probe.py \
   --output /capture/work \
   --work-index 0
 
@@ -115,23 +128,30 @@ qualified inventory, compact analysis, and a content-hash artifact manifest.
 Collection re-hashes each completed work directory and refuses partial or
 changed evidence before it writes the merged JSONL file.
 
-## Current H100 gate
+## H100 implementation status
 
-The development node has eight H100 80GB HBM3 GPUs with all GPU pairs reported
-as NV18 and CUDA 13.0. The convenient installed NCCL is 2.30.7 and the existing
-working source checkout is at another commit with local modifications, so both
-are disqualified.
+The source-faithful probe is implemented against the pinned NCCL commit and has
+run on the eight-H100 NVL8 development node. Representative diagnostics cover
+LL, LL128, Simple buffered and Simple DirectRead, empty and nonempty work,
+publication/consumption delays, and 8/32-channel sharing. These smoke results
+established that the implementation could reach its intended source branches.
 
-As a build prerequisite check, a fresh temporary checkout of pinned commit
-`7b83616df3ae082a1f32bb74c27458bfe8153a13` compiled NCCL 2.31.2 for
-`sm_90` successfully. The library SHA-256 is
-`57161bd381053afad3fab8a717caafe472e6dbbe24e751828930d281bd2f50b9`, and
-the build-record self-digest is
-`f801de5f55ef02167fe63816a8ae406fe5ca6f9309a3bb550d1ccab0b71aadd2`.
-The clean environment audit passes the *capability-build* gate.
+The complete 388-request capability sweep is now frozen. It qualified 334
+capability classes and 768 of 848 planned cells. The 80 excluded cells comprise
+48 unsupported Simple 17-worker-warp geometries, 24 held-out four-rank Simple
+DirectRead cells whose native reduction failed correctness, and 8 zero-payload
+LL/LL128 delayed-publication cells with no observable producer payload
+publication. `h100-capability-freeze.json` records every excluded capability
+key and all build, inventory, result, schedule, and smoke-artifact hashes.
 
-No primitive capability or ordinary timing result is claimed yet. The remaining
-gate is the source-faithful device probe in `PROBE_CONTRACT.md`, including the
-controlled publication/consumption hooks and diagnostic counters. Do not bypass
-it by hashing only the runner, by using the system library, or by substituting a
-custom CUDA copy kernel.
+One ordinary schedule item also completed the full 20-warmup/100-iteration
+path and emitted 300 qualified timer rows. This is an execution-path check, not
+the five-process campaign. The 3,840-item ordinary schedule, parameter fit, and
+held-out confirmation remain pending and must use the frozen inventory without
+adding back an excluded cell.
+
+The exact final build-record, environment-audit, capability inventory, and
+schedule hashes are in the progress ledger and capability-freeze record; bulk
+captures remain in the external capture directory. Do not reuse the earlier
+clean-library SHA after applying instrumentation, and do not substitute the
+system library or a stand-alone CUDA copy kernel.

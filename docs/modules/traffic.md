@@ -1833,10 +1833,12 @@ NVSwitch allocation; it does not qualify an eight-GPU switched board.
 - TRAF-94 (Precision; P1; L): identify the channel model's GPU and control
   service costs with the [standardized primitive experiment](../design/nccl-primitive-identification-v1.md)
   and its [versioned matrix](../../examples/nccl_primitive_identification_v1/manifest.json).
-  The design is frozen in `22e9690a`; the runner and hardware campaign remain
-  unimplemented. The surrogate is the declared cycle/memory profile, whose
-  polling and publication effects are not separately identified by collective
-  timing. Build source-faithful ready-peer/delayed-publication,
+  The design is frozen in `22e9690a`; the source-faithful runner and H100
+  capability inventory are implemented and frozen on the
+  `traf-94-primitive-measurements` branch, while the complete ordinary hardware
+  campaign and parameter analysis remain pending. The surrogate is the declared
+  cycle/memory profile, whose polling and publication effects are not separately
+  identified by collective timing. Build source-faithful ready-peer/delayed-publication,
   delayed-consumption, empty/nonempty, copy/reduction and memory-working-set
   probes before expanding to channel/warp/SM sharing. Freeze the expanded,
   capability-qualified cell inventory before ordinary timing. Capture exact
@@ -1848,7 +1850,8 @@ NVSwitch allocation; it does not qualify an eight-GPU switched board.
   intervention deltas within the greater of 10 percent or the frozen
   repeat-spread threshold. TRAF-93 supplies the Simple read branch;
   TRAF-43 retains full collective accuracy and uncertainty qualification,
-  COMP-44 retains host cost. No new hardware primitive results are claimed.
+  COMP-44 retains host cost. The capability record and one ordinary-path smoke
+  work item are not a new hardware parameter claim.
 - TRAF-43 (Precision; P1; M): replace the single-slope collective serializer
   with a regime-aware form. The shipped model charges one
   `bandwidth_bytes_per_second` at every payload, and the

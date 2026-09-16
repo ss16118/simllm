@@ -110,19 +110,37 @@ class ExperimentCell:
 
     @property
     def capability_key(self) -> str:
-        """Group controls that rely on the same source specialization.
+        """Group controls that rely on the same source specialization/support.
 
-        Capability is established once per primitive family and source branch,
-        not once for every byte count or delay.  The latter are ordinary timing
-        controls and must not turn the diagnostic pilot into the full campaign.
+        Delay magnitude and positive byte count are ordinary timing controls.
+        Geometry, resource grants, FIFO depth, empty work, and allocation mode
+        can independently be unsupported, so they are part of the capability
+        identity.  Omitting them used to let one easy pilot qualify cells whose
+        requested block size or SM grant had never run.
         """
 
+        support_names = (
+            "ranks",
+            "active_channels",
+            "available_sms",
+            "working_warps",
+            "reservations",
+            "working_set",
+        )
         key = {
             "architecture": self.architecture,
             "protocol": self.protocol,
             "simple_placement": self.simple_placement,
             "stage": self.stage,
             "family": self.family,
+            "support": {
+                name: self.requested[name]
+                for name in support_names
+                if name in self.requested
+            },
+            "payload_class": (
+                "empty" if self.requested.get("useful_bytes") == 0 else "nonempty"
+            ),
         }
         return "cap-" + content_digest(key)[:16]
 
@@ -140,7 +158,11 @@ def _stage_axes(
     manifest: Mapping[str, Any], stage: Mapping[str, Any], protocol: str
 ) -> tuple[tuple[str, tuple[Any, ...]], ...]:
     axes: list[tuple[str, tuple[Any, ...]]] = []
-    family = stage.get("family", ("confirmation",))
+    # A missing family is one scalar held-out family.  The previous tuple
+    # default was itself wrapped as an axis value, producing the JSON value
+    # ``["confirmation"]`` instead of the required string and silently
+    # violating ExperimentCell.family's schema.
+    family = stage.get("family", "confirmation")
     axes.append(("family", tuple(family) if isinstance(family, list) else (family,)))
     for name, value in stage.items():
         if name in {"id", "family", "role"}:
@@ -181,6 +203,12 @@ def expand_manifest(
                     selected = dict(zip(names, values, strict=True))
                     requested = {
                         **manifest["baseline"],
+                        # The native adapter uses the stage to choose the
+                        # source-faithful public API path (P2P for readiness and
+                        # reuse; Ring collective otherwise).  It therefore
+                        # belongs in the frozen request, not transient runner
+                        # metadata.
+                        "stage": stage["id"],
                         "dtype": manifest["dtype"],
                         "architecture": architecture,
                         "protocol": protocol,
@@ -188,6 +216,12 @@ def expand_manifest(
                         "working_warps": manifest["baseline_working_warps"][protocol],
                         **{name: value for name, value in selected.items() if name != "family"},
                     }
+                    if "useful_bytes_per_channel" in selected:
+                        # Sharing/confirmation define payload in bytes per
+                        # channel.  Retaining baseline.useful_bytes beside it
+                        # makes the request ambiguous and previously caused the
+                        # adapter to launch only the 1,920-byte baseline total.
+                        requested.pop("useful_bytes", None)
                     drafts.append({
                         "stage": stage["id"],
                         "role": stage.get("role", "identification"),
@@ -255,10 +289,10 @@ def validate_inventory(document: Mapping[str, Any]) -> None:
             raise ValueError("qualified inventory contains a cell without a passing outcome")
 
 
-def capability_keys(cells: Sequence[ExperimentCell]) -> tuple[dict[str, str], ...]:
+def capability_keys(cells: Sequence[ExperimentCell]) -> tuple[dict[str, Any], ...]:
     """Return the minimal deterministic pilot inventory."""
 
-    unique: dict[str, dict[str, str]] = {}
+    unique: dict[str, dict[str, Any]] = {}
     for cell in cells:
         unique.setdefault(cell.capability_key, {
             "capability_key": cell.capability_key,

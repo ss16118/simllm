@@ -30,6 +30,14 @@ def main() -> None:
         required=True,
         help="Exact command used to produce the library; stored as evidence, not executed.",
     )
+    parser.add_argument(
+        "--instrumentation-patch",
+        type=Path,
+        help=(
+            "Versioned patch intentionally applied to the pinned checkout. "
+            "Without this option any dirty source remains fatal."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -37,8 +45,30 @@ def main() -> None:
     source = _source_identity(args.source)
     if source["head"] != manifest["source_commit"]:
         raise ValueError("source checkout is not at the manifest's pinned commit")
+    patch_digest = None
     if source["dirty"]:
-        raise ValueError("source checkout has uncommitted changes")
+        if args.instrumentation_patch is None:
+            raise ValueError("source checkout has uncommitted changes")
+        patch = args.instrumentation_patch.resolve(strict=True)
+        patch_digest = _sha256(patch)
+        # Reverse applicability proves that every hunk in the declared patch is
+        # present in this checkout.  Source-file hashes below bind the complete
+        # resulting bytes, so later extra edits cannot reuse this record.
+        reverse = subprocess.run(
+            ("git", "apply", "--reverse", "--check", str(patch)),
+            cwd=args.source,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        if reverse.returncode:
+            raise ValueError(
+                "instrumentation patch is not exactly applicable in reverse: "
+                + reverse.stderr.strip()
+            )
+    elif args.instrumentation_patch is not None:
+        raise ValueError("instrumentation patch was supplied to a clean checkout")
     library = args.library.resolve(strict=True)
     # ldd records the actual shared-library dependencies of these bytes.  It is
     # evidence for reproducing the build, but the output is not interpreted as
@@ -63,6 +93,9 @@ def main() -> None:
         "dependencies": dependencies.stdout.splitlines(),
         "dependencies_returncode": dependencies.returncode,
     }
+    if patch_digest is not None:
+        record["instrumentation_patch_sha256"] = patch_digest
+        record["instrumentation_dirty_paths"] = source["dirty"]
     record["build_record_digest"] = content_digest(record)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")

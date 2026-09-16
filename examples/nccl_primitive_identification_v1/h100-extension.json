@@ -1,7 +1,7 @@
 {
   "schema": "simllm-nccl-primitive-architecture-extension-v1",
-  "status": "planned_capability_not_yet_frozen",
-  "base_manifest_digest": "dcb481d70a436b2b82f8091cefceff0d5363ab026eb55886cd1ba470cccb9823",
+  "status": "capability_inventory_frozen_ordinary_campaign_pending",
+  "base_manifest_digest": "4427e867baae52901e0801822f687a53c99ffb8a6d1e0763e6a1aaeafdd809c2",
   "architectures": [
     {
       "id": "h100",

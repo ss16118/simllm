@@ -89,12 +89,15 @@ Qualified rows use an empty reason; other rows retain an explicit reason.
   unsuccessful checks.
 - Delayed publication uses a device-side consumer-start signal. The producer
   performs the requested local `clock64()` delay and records the observed local
-  delay. Delay zero follows the identical signal path.
+  delay. Delay zero follows the identical signal path. Device-service interval
+  boundaries use same-GPU `%globaltimer` nanoseconds so blocks on different SMs
+  cannot create an invalid SM-local clock subtraction.
 - Delayed consumption waits only after readiness and before consumption/head
   return. It must keep the live FIFO reservation unavailable to the producer.
 - Empty cases execute source-prescribed control steps but perform no payload
   movement. A convenient zero-byte API call that bypasses the primitive is not
-  equivalent.
+  equivalent. Simple placement is proven by the executing connection flags in
+  this case, not by requiring a nonzero payload-byte counter.
 - Copy and float32 sum retain the same geometry. Sum records input count and
   source loads so memory work is not mislabeled arithmetic.
 - Rotating working sets are initialized and warmed before timing. The reuse and

@@ -1,0 +1,86 @@
+{
+  "schema": "simllm-nccl-primitive-capability-freeze-v1",
+  "status": "capability_inventory_frozen_ordinary_campaign_pending",
+  "recorded_at": "2026-09-16",
+  "source_commit": "7b83616df3ae082a1f32bb74c27458bfe8153a13",
+  "manifest": {
+    "digest": "4427e867baae52901e0801822f687a53c99ffb8a6d1e0763e6a1aaeafdd809c2"
+  },
+  "build": {
+    "record_digest": "3beb1d0935c9a685173fb398f097784c8111634f6abc21ce03c20fcf74b0ef12",
+    "record_sha256": "9e4b51c995f87f215b08c3ba511e61438818ebe50a2268e4d8b28553d1fb2449",
+    "environment_audit_sha256": "5e742367846774dd642dcac5dff8fdd45450a4992b2a33aba51aea8c09c54564",
+    "instrumentation_patch_sha256": "c53bb397ad92f7bec46cc5b6d94c34070b51c87d2db865a8c1afc840c2d6547f",
+    "nccl_library_sha256": "fe444e4a9ebe18e99ba31e10bff50ee2b4ae1c3c7de3775b20baac484c43dae0",
+    "probe_executable_sha256": "3affb81bb911eca6b4b8040da7f552690271c2c9db95d090f0d731229f81c009",
+    "probe_identity_digest": "8612974c171d7de4d39fbecef383d4ecf8402754c1a368d95fb911b5ad8423e8"
+  },
+  "planned_inventory": {
+    "cells": 848,
+    "inventory_digest": "41fe4886f04fa2dddb23c63c447b8062d6eec4935981e22247309d74b263645e",
+    "file_sha256": "d9f78086f1905e86f9b1741b8ccdd852f6bf5d2ea30bc92cbe2ad79aedbf4a55"
+  },
+  "capability_campaign": {
+    "requests": 388,
+    "qualified": 334,
+    "rejected": 54,
+    "request_file_sha256": "5472de99b2c0fabf0713208c146d55235489efc7549f490f5de794c7cbeda32f",
+    "result_file_sha256": "c6b682eeef6378b2513c5a6785286a3f3e5062335412d1785be5bb128f474707"
+  },
+  "qualified_inventory": {
+    "cells": 768,
+    "inventory_digest": "a0915efc4442aa290aaf82f8de48b3327e9c62d3ff94d4fdd8563fbdb2eaefa7",
+    "file_sha256": "59fbc0f21893f9646063e983789dbca8353487c061a770432b475de3887747f9"
+  },
+  "ordinary_schedule": {
+    "work_items": 3840,
+    "schedule_digest": "7f2c2f4919f5b8eee1a385fab0d41a41c9031c16551495c3491b7ba98619b53d",
+    "file_sha256": "db4e8b485eca62ec4645dbf9a8e3d54b59d541cd5fcfbe2ec0d233dbe0b19bf3"
+  },
+  "ordinary_path_smoke": {
+    "work_index": 0,
+    "rows": 300,
+    "qualified_rows": 300,
+    "observation_file_sha256": "1940c6b100447ef3e0be8bdf9e7ce0e434ec7e79a3146e0e9fd8dc0b34141b72",
+    "artifact_manifest_sha256": "bb0928eaa85fbd811dd51df60cd182c254c82b5e45852855f7137713433af475"
+  },
+  "exclusions": [
+    {
+      "reason": "working_warps_not_realized;block_threads_not_realized",
+      "capabilities": 48,
+      "cells": 48,
+      "explanation": "Pinned NCCL Simple realizes at most 16 worker warps plus its synchronization warp, so requested 17-worker-warp cells are unsupported.",
+      "capability_keys": [
+        "cap-00e1baf1fdd64be0", "cap-0e7d4a2979454fa1", "cap-17852834c993cbb0", "cap-19eb871f13f542e3",
+        "cap-1bda5ae248d7a64b", "cap-1d6b1b9d24afaff3", "cap-24677587fc30b472", "cap-3235a7c0f0ba7267",
+        "cap-349ee57c46448a7d", "cap-354fd6ae84052913", "cap-3e4ba73816e6382b", "cap-40ceb12efc8d1c77",
+        "cap-4c65ed8cdb885654", "cap-4f4fb5bd4c48787a", "cap-5130127e2565e2c0", "cap-598977b0bad0d9d2",
+        "cap-5a455adf27c3214e", "cap-5bafb3fa0fe73ae8", "cap-5c347ac5e78603cb", "cap-66679167ae11e265",
+        "cap-6676d6615b9198fa", "cap-699c9cb64aa88d16", "cap-6d7fcb9ae7fa7292", "cap-71899dcf09b92aa8",
+        "cap-77f8026a66dbcba0", "cap-819e9564ad3e54a8", "cap-8464b6939dfb2053", "cap-892dcab9052d3b61",
+        "cap-8f8b4193ec27dfa6", "cap-a5d5242a2f3495c1", "cap-ad5a2a7b49164e86", "cap-af1c55cd8cade869",
+        "cap-bab5973fe759e2e4", "cap-bb2ba6e5d6bfe1c2", "cap-bdac370b679ebf7b", "cap-c3d6d76d5e36c925",
+        "cap-c46f0e0d77a15e48", "cap-d3834e3d88484ef7", "cap-dbc9d029433dcb8b", "cap-de13baa2928adda8",
+        "cap-e2b14d5721cfb75a", "cap-e2e4cb0539fbdf4a", "cap-e2f873f53166cadd", "cap-ef5cf31fce765d5f",
+        "cap-f13376621144239d", "cap-fbd4d1bd9b1527da", "cap-fd335cd45c5e9e3d", "cap-ff515504c04d48cc"
+      ]
+    },
+    {
+      "reason": "native_probe_failure:RuntimeError:native probe exited 5: correctness mismatch at element 0: got 5, expected 10",
+      "capabilities": 4,
+      "cells": 24,
+      "explanation": "The forced four-rank Simple DirectRead Ring path in the pinned source produces an incorrect reduction and is excluded rather than treated as timing evidence.",
+      "capability_keys": [
+        "cap-528d657d71761c81", "cap-5a8871efcae1e254", "cap-d1af2e4e41440173", "cap-da7f4451c545ee53"
+      ]
+    },
+    {
+      "reason": "device_delay_shorter_than_requested",
+      "capabilities": 2,
+      "cells": 8,
+      "explanation": "Zero-payload LL and LL128 delayed-publication cells execute no producer payload-publication site, so the requested publication delay cannot be observed.",
+      "capability_keys": ["cap-e1c63778c7bc0ec1", "cap-e1f0d987bf30b196"]
+    }
+  ],
+  "claim_boundary": "This record freezes capability and an ordinary-path smoke test. It does not claim the 3840-item five-process timing campaign, fitted parameters, or held-out acceptance is complete."
+}

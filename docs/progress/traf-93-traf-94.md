@@ -49,16 +49,16 @@ The normative inputs are:
   product.
 - [x] Implement required result-row validation and explicit qualification
   reasons.
-- [ ] Implement already-ready, delayed-publication, delayed-consumption,
+- [x] Implement already-ready, delayed-publication, delayed-consumption,
   empty/nonempty, copy/reduction and working-set primitive probes.
-- [ ] Add channel/warp/SM resource-sharing probes after the one-channel pilot.
+- [x] Add channel/warp/SM resource-sharing probes after the one-channel pilot.
 - [x] Keep diagnostic source-operation counts separate from ordinary timing in
-  the runner/probe contract. The device probe still has to emit the counts.
+  the runner/probe contract, and emit them only from diagnostic native runs.
 - [x] Capture requested and realized controls, source/build/device identity,
   local timer boundaries, correctness and process exits.
 - [x] Implement five-process completeness, paired-IQR resolution and held-out
   prediction checks.
-- [ ] Freeze the capability-qualified expanded H100 inventory before ordinary
+- [x] Freeze the capability-qualified expanded H100 inventory before ordinary
   timing. H100 is an extension; it is not silently labeled A100 or GH200.
 - [ ] Run and publish the hardware campaign.
 
@@ -79,6 +79,18 @@ The normative inputs are:
 | 2026-09-11 | `traf-94-primitive-measurements` | Combined TRAF-93/TRAF-94 and discovered-regression set with venv `pip` on `PATH` | 380 passed in 17.41 seconds; Ruff and `git diff --check` passed. |
 | 2026-09-11 | `traf-94-primitive-measurements` | Clean pinned NCCL build for `sm_90` | NCCL 2.31.2 built successfully from `7b83616df3ae082a1f32bb74c27458bfe8153a13`; library SHA-256 `57161bd381053afad3fab8a717caafe472e6dbbe24e751828930d281bd2f50b9`. |
 | 2026-09-11 | `traf-94-primitive-measurements` | Build-record plus clean H100 environment audit | Capability-build gate passed; build-record digest `f801de5f55ef02167fe63816a8ae406fe5ca6f9309a3bb550d1ccab0b71aadd2`. This is not primitive capability or timing evidence. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Refreshed `upstream/main` and compared all TRAF-94 paths | Upstream has no newer probe or hardware campaign to reuse; the source-faithful executable remains the missing implementation. |
+| 2026-09-16 | `traf-94-primitive-measurements` | `SOURCE_PROBE_DESIGN.md` | Froze the implementation mapping from every manifest family to an actual pinned-NCCL source site, including ordinary/diagnostic separation and fatal qualification guards. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Expanded-inventory type audit | Found and fixed the confirmation-stage default being emitted as a one-element JSON list instead of the scalar family `confirmation`; the H100 inventory must be regenerated and re-frozen before timing. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Capability-request audit | Added the deterministic representative cell controls to each grouped capability request; the earlier request named a source family but did not contain enough values to launch or verify a real device pilot. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Capability grouping audit | Replaced 32 overly broad family-only pilots with 388 support-sensitive pilots covering rank/channel/warp/SM geometry, FIFO reservations, empty work, and rotating allocation. The strongest delay/size member represents only support-equivalent timing cells. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Pinned NCCL source probe implementation | Added a versioned patch over NCCL `7b83616d`: LL/LL128/Simple source counters and interventions, explicit P2P protocol/warp controls, Simple buffered/DirectRead selection, same-device `%globaltimer` intervals, and realized protocol/channel/block/worker/placement/SM evidence. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Native harness and strict adapter | Added `primitive_probe.cu`, `build_probe.py`, and `probe.py`; the harness uses public NCCL P2P for readiness/reuse and segmented Ring AllReduce for data/sharing/confirmation, exportable `ncclMemAlloc` buffers, CUDA green contexts, three timer boundaries, and post-timing exact correctness. |
+| 2026-09-16 | `traf-94-primitive-measurements` | H100 source-path smoke matrix | LL, LL128, Simple buffered and Simple DirectRead passed already-ready, delayed-publication, delayed-consumption, empty/nonempty, sum, 8/32-channel sharing, and observed-delay checks. A wider four-rank Simple DirectRead sum is correctly retained as unsupported because the forced pinned-source path produces an incorrect result; buffered Simple and LL four-rank confirmation pass. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Final instrumented NCCL/probe provenance | NCCL 2.31.2 `sm_90` library SHA-256 `fe444e4a9ebe18e99ba31e10bff50ee2b4ae1c3c7de3775b20baac484c43dae0`; instrumentation patch SHA-256 `c53bb397ad92f7bec46cc5b6d94c34070b51c87d2db865a8c1afc840c2d6547f`; build-record digest `3beb1d0935c9a685173fb398f097784c8111634f6abc21ce03c20fcf74b0ef12`; probe identity `8612974c171d7de4d39fbecef383d4ecf8402754c1a368d95fb911b5ad8423e8`; environment gate passed. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Full H100 capability sweep and inventory freeze | All 388 capability requests completed: 334 qualified and 54 explicitly rejected. The resulting 768-cell inventory digest is `a0915efc4442aa290aaf82f8de48b3327e9c62d3ff94d4fdd8563fbdb2eaefa7`; the exact hashes and rejected keys are in `h100-capability-freeze.json`. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Ordinary-path smoke work item | Work index 0 completed 20 warmups and 100 measured repetitions, emitting 300 qualified rows across the three required timers; observation SHA-256 `1940c6b100447ef3e0be8bdf9e7ce0e434ec7e79a3146e0e9fd8dc0b34141b72`. This proves the normal runner path, not completion of the 3,840-item campaign. |
+| 2026-09-16 | `traf-94-primitive-measurements` | Focused TRAF-93/TRAF-94 regression suite | 242 passed in 10.57 seconds; Ruff and `git diff --check` passed. |
 
 ## Commands
 
@@ -104,11 +116,18 @@ python examples/nccl_primitive_identification_v1/run_study.py capability-plan \
   --output /tmp/traf94-h100-capabilities.jsonl
 ```
 
-The planned inventory file's byte hash is
-`798da79003759346505140aa2b9716043a24d433a622ba9e5801c9857aa41851`;
-its canonical self-digest is the value recorded in the verification table.
-The 32-line capability-request file's byte hash is
-`2293ac3c677af45d8dae3eaadd1d13fc95dd9b6f04d69067530f6a11794fac5b`.
+Those commands document the superseded 2026-09-11 planning pass. The completed
+2026-09-16 source-probe pass expanded 848 cells into 388 support-sensitive
+capability requests and froze 768 qualified cells. Its compact record is
+`examples/nccl_primitive_identification_v1/h100-capability-freeze.json`; raw
+requests, native stdout/stderr, qualified inventory, schedule, and observation
+rows remain in the external capture area named by their SHA-256 hashes.
+
+The remaining hardware work is deliberately separate: execute all 3,840 frozen
+ordinary schedule items, collect the five process records per cell, fit only the
+identification stages, and score the held-out confirmation stage. Until those
+steps pass, TRAF-94 has a complete runner and frozen capability inventory but no
+published parameter or accuracy claim.
 
 ## Handoff notes for future engineers and agents
 

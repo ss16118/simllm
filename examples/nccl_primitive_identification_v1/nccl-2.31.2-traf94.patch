@@ -1,0 +1,975 @@
+diff --git a/src/device/common.h b/src/device/common.h
+index cce0e28..2384c42 100644
+--- a/src/device/common.h
++++ b/src/device/common.h
+@@ -11,8 +11,8 @@
+ #include "collectives.h"
+ #include "device.h"
+ #include "op128.h"
+-#include "reduce_kernel.h"
+ #include "network/unpack/unpack_defs.h"
++#include "traf94.h"
+ 
+ #define COLL_UNROLL (ncclCollUnroll())
+ 
+@@ -70,6 +70,190 @@ struct ncclShmemData {
+ };
+ 
+ extern __shared__ ncclShmemData ncclShmem;
++
++// The helpers below are the only instrumentation interface used by primitive
++// headers.  Every helper checks the magic and enable bit, so a null control
++// pointer has exactly the original source behavior apart from one predictable
++// branch.  Diagnostic atomics use system scope because the control allocation
++// is shared by kernels running on more than one GPU.
++__device__ __forceinline__ ncclTraf94Control* ncclTraf94() {
++  ncclTraf94Control* c = ncclShmem.comm.traf94;
++  return c != nullptr && c->magic == NCCL_TRAF94_MAGIC && c->enabled ? c : nullptr;
++}
++
++__device__ __forceinline__ bool ncclTraf94CopyReduce() {
++  ncclTraf94Control* c = ncclTraf94();
++  return c != nullptr && c->family == ncclTraf94Copy;
++}
++
++__device__ __forceinline__ void ncclTraf94Published() {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c != nullptr && ncclShmem.comm.rank == (int)c->producerRank) {
++    __threadfence_system();
++    atomicExch_system(&c->producerReleased, 1u);
++  }
++}
++
++__device__ __forceinline__ void ncclTraf94Add(uint64_t* value, uint64_t amount) {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c != nullptr && c->diagnostic) atomicAdd_system((unsigned long long*)value, (unsigned long long)amount);
++}
++
++__device__ __forceinline__ uint64_t ncclTraf94Timestamp() {
++  // clock64 is SM-local and can produce meaningless subtraction when a
++  // multi-channel interval begins and ends on different SMs.  Hopper's
++  // globaltimer is device-wide and expressed in nanoseconds.
++  uint64_t value;
++  asm volatile("mov.u64 %0, %globaltimer;" : "=l"(value));
++  return value;
++}
++
++__device__ __forceinline__ void ncclTraf94Geometry(int protocol, int nthreads) {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c == nullptr) return;
++  int rank = ncclShmem.comm.rank;
++  if (rank < 0 || rank >= NCCL_TRAF94_MAX_RANKS) { c->unsupportedSite = 1; return; }
++  c->realizedProtocol[rank] = protocol + 1;
++  c->realizedBlockThreads[rank] = blockDim.x;
++  c->realizedWorkWarps[rank] = nthreads / WARP_SIZE;
++  atomicOr(&c->realizedChannelMask[rank], 1u << ncclShmem.channelId);
++  uint32_t smid;
++  asm volatile("mov.u32 %0, %smid;" : "=r"(smid));
++  if (smid < 64) atomicOr((unsigned long long*)&c->realizedSmMaskLo[rank], 1ULL << smid);
++  else if (smid < 128) atomicOr((unsigned long long*)&c->realizedSmMaskHi[rank], 1ULL << (smid - 64));
++  else if (smid < 192) atomicOr((unsigned long long*)&c->realizedSmMask2[rank], 1ULL << (smid - 128));
++  else c->unsupportedSite = 1;
++}
++
++__device__ __forceinline__ void ncclTraf94PlacementEvidence(int placement) {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c == nullptr) return;
++  int rank = ncclShmem.comm.rank;
++  if (rank < 0 || rank >= NCCL_TRAF94_MAX_RANKS || placement < 0 || placement > 31) {
++    c->unsupportedSite = 1;
++    return;
++  }
++  // Several wait-role threads can report the same connection.  A bitmask makes
++  // the update idempotent and also exposes an unexpected mixture of modes.
++  atomicOr(&c->realizedPlacementMask[rank], 1u << placement);
++}
++
++__device__ __forceinline__ void ncclTraf94PeerEvidence(int recvPeer, int sendPeer) {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c == nullptr) return;
++  int rank = ncclShmem.comm.rank;
++  int channel = ncclShmem.channelId;
++  if (rank < 0 || rank >= NCCL_TRAF94_MAX_RANKS || channel < 0 ||
++      channel >= NCCL_TRAF94_MAX_CHANNELS || recvPeer < -1 ||
++      recvPeer >= NCCL_TRAF94_MAX_RANKS || sendPeer < -1 ||
++      sendPeer >= NCCL_TRAF94_MAX_RANKS) {
++    c->unsupportedSite = 1;
++    return;
++  }
++  // The probe forces Ring (one peer in each direction) or one-way P2P.  The
++  // +1 encoding distinguishes a real rank zero from an absent direction.
++  c->realizedRecvPeer[rank][channel] = recvPeer + 1;
++  c->realizedSendPeer[rank][channel] = sendPeer + 1;
++}
++
++__device__ __forceinline__ void ncclTraf94UserBuffer(void const* input) {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c == nullptr) return;
++  int rank = ncclShmem.comm.rank;
++  if (rank < 0 || rank >= NCCL_TRAF94_MAX_RANKS) {
++    c->unsupportedSite = 1;
++    return;
++  }
++  // Segmented sharing cells instantiate several primitives in one group.  The
++  // minimum source-observed pointer is the allocation offset for that whole
++  // iteration, independent of the order in which segment blocks start.
++  atomicMin_system((unsigned long long*)&c->observedInputPtr[rank],
++                   (unsigned long long)reinterpret_cast<uintptr_t>(input));
++}
++
++__device__ __forceinline__ void ncclTraf94ReadyObservation(bool ready) {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c == nullptr) return;
++  int rank = ncclShmem.comm.rank;
++  if (rank == (int)c->consumerRank) {
++    if (c->family == ncclTraf94AlreadyReady) {
++      // DirectRead performs constructor-time pointer exchange before the
++      // producer can publish, so gate at the first source readiness
++      // observation.  A value loaded before this gate is stale by construction
++      // and is excluded; the primitive immediately reloads it.
++      while (atomicAdd_system(&c->producerReleased, 0u) == 0u) {}
++      if (c->intervalBegin[rank] == 0)
++        atomicCAS_system((unsigned long long*)&c->intervalBegin[rank], 0ULL,
++                         (unsigned long long)ncclTraf94Timestamp());
++      if (!ready) return;
++    } else if (c->intervalBegin[rank] == 0) {
++      atomicCAS_system((unsigned long long*)&c->intervalBegin[rank], 0ULL,
++                       (unsigned long long)ncclTraf94Timestamp());
++    }
++    if (c->family == ncclTraf94DelayedPublication) {
++      atomicExch_system(&c->consumerStarted, 1u);
++      __threadfence_system();
++    }
++  }
++  if (c->diagnostic) {
++    atomicAdd_system((unsigned long long*)&c->readinessChecks, 1ULL);
++    atomicAdd_system((unsigned long long*)(ready ? &c->successfulObservations : &c->unsuccessfulChecks), 1ULL);
++  }
++}
++
++__device__ __forceinline__ void ncclTraf94BeforePublication() {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c == nullptr || c->family != ncclTraf94DelayedPublication ||
++      ncclShmem.comm.rank != (int)c->producerRank) return;
++  int rank = ncclShmem.comm.rank;
++  if (atomicCAS_system(&c->publicationDelayApplied[rank], 0u, 1u) == 0u) {
++    while (atomicAdd_system(&c->consumerStarted, 0u) == 0u) {}
++    uint64_t begin = clock64();
++    while (clock64() - begin < c->delayCycles) {}
++    uint64_t elapsed = clock64() - begin;
++    c->observedDelay[rank] = elapsed;
++    __threadfence_system();
++    atomicExch_system(&c->producerReleased, 1u);
++    atomicExch_system(&c->publicationDelayApplied[rank], 2u);
++  } else {
++    // Publication stores from other workers must not pass the worker applying
++    // the intervention.  State 2 is a device-visible release for the group.
++    while (atomicAdd_system(&c->publicationDelayApplied[rank], 0u) != 2u) {}
++  }
++}
++
++__device__ __forceinline__ void ncclTraf94BeforeConsumption() {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c == nullptr || c->family != ncclTraf94DelayedConsumption ||
++      ncclShmem.comm.rank != (int)c->consumerRank) return;
++  int rank = ncclShmem.comm.rank;
++  if (atomicCAS_system(&c->consumptionDelayApplied[rank], 0u, 1u) == 0u) {
++    uint64_t begin = clock64();
++    while (clock64() - begin < c->delayCycles) {}
++    c->observedDelay[rank] = clock64() - begin;
++    __threadfence_system();
++    atomicExch_system(&c->consumptionDelayApplied[rank], 2u);
++  } else {
++    while (atomicAdd_system(&c->consumptionDelayApplied[rank], 0u) != 2u) {}
++  }
++}
++
++__device__ __forceinline__ void ncclTraf94FinishConsumerStep() {
++  ncclTraf94Control* c = ncclTraf94();
++  if (c == nullptr) return;
++  int rank = ncclShmem.comm.rank;
++  if (rank == (int)c->consumerRank)
++    atomicMax_system((unsigned long long*)&c->intervalEnd[rank],
++                     (unsigned long long)ncclTraf94Timestamp());
++  if (c->diagnostic) atomicAdd_system((unsigned long long*)&c->consumedSteps, 1ULL);
++}
++
++// Only the legacy collective translation units include reduce_kernel.h here,
++// after ncclShmem and the control helper are defined.  Symmetric/NVLS kernels
++// include that generic header independently and deliberately retain upstream
++// arithmetic; the probe forces Ring and rejects any realized protocol mismatch.
++#define NCCL_TRAF94_REDUCE_HOOK 1
++#include "reduce_kernel.h"
+ #if __CUDA_ARCH__ >= 700
+ extern __shared__ ulong2 ncclShmemPerWarp[/*ncclShmemDynamicSize()/sizeof(ulong2)*/];
+ #else
+diff --git a/src/device/prims_ll.h b/src/device/prims_ll.h
+index fa3b12e..85ec785 100644
+--- a/src/device/prims_ll.h
++++ b/src/device/prims_ll.h
+@@ -75,8 +75,10 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
+       int spins = 0;
+       while (sendConnHeadCache + NCCL_STEPS < sendConnHead + 1) {
+         sendConnHeadCache = *sendConnHeadPtr;
++        ncclTraf94ReadyObservation(sendConnHeadCache + NCCL_STEPS >= sendConnHead + 1);
+         if (checkAbort(abort, 1, spins)) break;
+       }
++      if (spins == 0) ncclTraf94ReadyObservation(true);
+       if (sendConnFifo) {
+         int size = ((sendConnHead & NCCL_LL_CLEAN_MASK) == NCCL_LL_CLEAN_MASK) ?
+                      stepLines * sizeof(union ncclLLFifoLine) :
+@@ -93,7 +95,12 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
+   }
+   inline __device__ void postRecv() {
+     barrier();
+-    if (recvConnHeadPtr) *recvConnHeadPtr = recvConnHead += 1;
++    if (recvConnHeadPtr) {
++      *recvConnHeadPtr = recvConnHead += 1;
++      ncclTraf94Control* traf94 = ncclTraf94();
++      if (traf94 != nullptr) ncclTraf94Add(&traf94->headPublications, 1);
++      ncclTraf94FinishConsumerStep();
++    }
+   }
+ 
+   inline __device__ void incSend(int i, int offset) {
+@@ -115,8 +122,12 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
+                    : "=r"(data1), "=r"(flag1), "=r"(data2), "=r"(flag2)
+                    : "l"(&src->i4)
+                    : "memory");
++      ncclTraf94Control* traf94 = ncclTraf94();
++      if (traf94 != nullptr) ncclTraf94Add(&traf94->remoteReadBytes, sizeof(ncclLLFifoLine));
++      ncclTraf94ReadyObservation((flag1 == flag) && (flag2 == flag));
+       if (checkAbort(abort, 1, spins)) break;
+     } while ((flag1 != flag) || (flag2 != flag));
++    ncclTraf94BeforeConsumption();
+     uint64_t val64 = data1 + (((uint64_t)data2) << 32);
+     return val64;
+   }
+@@ -133,6 +144,8 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
+                      : "=r"(line[i].data1), "=r"(line[i].flag1), "=r"(line[i].data2), "=r"(line[i].flag2)
+                      : "l"(&src->i4)
+                      : "memory");
++        ncclTraf94Control* traf94 = ncclTraf94();
++        if (traf94 != nullptr) ncclTraf94Add(&traf94->remoteReadBytes, sizeof(ncclLLFifoLine));
+       }
+     }
+   }
+@@ -145,16 +158,27 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
+                    : "=r"(line[i].data1), "=r"(line[i].flag1), "=r"(line[i].data2), "=r"(line[i].flag2)
+                    : "l"(&src->i4)
+                    : "memory");
++      ncclTraf94Control* traf94 = ncclTraf94();
++      if (traf94 != nullptr) ncclTraf94Add(&traf94->remoteReadBytes, sizeof(ncclLLFifoLine));
++      ncclTraf94ReadyObservation((line[i].flag1 == flag) && (line[i].flag2 == flag));
+       if (checkAbort(abort, 1, spins)) break;
+     }
++    ncclTraf94BeforeConsumption();
+     uint64_t val64 = line[i].data1 + (((uint64_t)line[i].data2) << 32);
+     return val64;
+   }
+ 
+   __device__ void storeLL(union ncclLLFifoLine* dst, uint64_t val, uint32_t flag) {
++    ncclTraf94BeforePublication();
+     asm volatile("st.volatile.global.v4.u32 [%0], {%1,%2,%3,%4};" ::"l"(&dst->i4), "r"((uint32_t)val), "r"(flag),
+                  "r"((uint32_t)(val >> 32)), "r"(flag)
+                  : "memory");
++    ncclTraf94Published();
++    ncclTraf94Control* traf94 = ncclTraf94();
++    if (traf94 != nullptr) {
++      ncclTraf94Add(&traf94->remoteWriteBytes, sizeof(ncclLLFifoLine));
++      ncclTraf94Add(&traf94->tailPublications, 1);
++    }
+   }
+ 
+   static constexpr int EltPerLine = sizeof(uint64_t) / sizeof(T);
+@@ -250,6 +274,10 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>
+ 
+     // Always waitSend in case of cleanup
+     nelem = nelem < 0 ? 0 : nelem;
++    ncclTraf94Control* traf94 = ncclTraf94();
++    if (traf94 != nullptr && traf94->forceEmpty) nelem = 0;
++    if (tid == 0 && traf94 != nullptr && traf94->diagnostic && SRC && nelem > 0)
++      ncclTraf94Add(&traf94->sourceLoadBytes, uint64_t(nelem) * sizeof(T));
+     if (SEND) waitSend(divUp(nelem, EltPerLine) * sizeof(ncclLLFifoLine));
+ 
+     nelem -= tid * EltPerLine;
+@@ -348,6 +376,11 @@ public:
+                         bool ipcReg = false, bool netReg = false, int stepSize_ = 0)
+     : redOp(redOpArg), tid(tid), nthreads(nthreads), wid(tid % WARP_SIZE), group(group),
+       stepLines(ncclShmem.comm.buffSizes[NCCL_PROTO_LL] / NCCL_STEPS / sizeof(ncclLLFifoLine)) {
++    if (tid == 0) {
++      ncclTraf94Geometry(NCCL_PROTO_LL, nthreads);
++      ncclTraf94PlacementEvidence(ncclTraf94PlacementNA);
++      ncclTraf94UserBuffer(inputBuf);
++    }
+     auto* channel = &ncclShmem.channel;
+     // If we are going to support oneshot collNet + LL, then we would need to add connector index here
+     int nrecv = 0, nsend = 0;
+@@ -363,6 +396,9 @@ public:
+       loadSendConn(&channel->peers[sendPeers[nsend]]->send[connIndexSend], nsend);
+       nsend++;
+     }
++    if (tid == 0)
++      ncclTraf94PeerEvidence(nrecv == 0 ? -1 : recvPeers[0],
++                             nsend == 0 ? -1 : sendPeers[0]);
+     this->fan = Fan(nrecv, nsend);
+     // Coverity reports recvConn and sendConn being possibly NULL at this point but that won't actually
+     // happen given the two "while" loops just above.
+diff --git a/src/device/prims_ll128.h b/src/device/prims_ll128.h
+index 0ecf827..e899f58 100644
+--- a/src/device/prims_ll128.h
++++ b/src/device/prims_ll128.h
+@@ -72,8 +72,10 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
+       int spins = 0;
+       while (sendConnHeadCache + NCCL_STEPS < sendConnHead + 1) {
+         sendConnHeadCache = *sendConnHeadPtr;
++        ncclTraf94ReadyObservation(sendConnHeadCache + NCCL_STEPS >= sendConnHead + 1);
+         if (checkAbort(abort, 1, spins)) break;
+       }
++      if (spins == 0) ncclTraf94ReadyObservation(true);
+       if (sendConnFifo) {
+         sendConnFifo[sendStep[wid] % NCCL_STEPS].size = nbytes;
+       }
+@@ -82,16 +84,25 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
+   }
+ 
+   inline __device__ void postRecv() {
+-    if (recvConnHeadPtr) *recvConnHeadPtr = recvConnHead += 1;
++    if (recvConnHeadPtr) {
++      *recvConnHeadPtr = recvConnHead += 1;
++      ncclTraf94Control* traf94 = ncclTraf94();
++      if (traf94 != nullptr) ncclTraf94Add(&traf94->headPublications, 1);
++      ncclTraf94FinishConsumerStep();
++    }
+   }
+   inline __device__ void postSend() {
+     if (sendConnTailPtr) {
++      ncclTraf94BeforePublication();
+ #if __CUDA_ARCH__ >= 900
+       __threadfence_system();
+ #else
+       __threadfence();
+ #endif
+       *sendConnTailPtr = sendConnTail += 1;
++      ncclTraf94Published();
++      ncclTraf94Control* traf94 = ncclTraf94();
++      if (traf94 != nullptr) ncclTraf94Add(&traf94->tailPublications, 1);
+     }
+   }
+ 
+@@ -197,10 +208,14 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
+         NVCC_PRAGMA_UNROLL_AUTO
+         for (int u = 0; u < ELEMS_PER_THREAD; u += 2) {
+           load128(ptr + u * WARP_SIZE, vr[u], vr[u + 1]);
++          ncclTraf94Control* traf94 = ncclTraf94();
++          if (traf94 != nullptr) ncclTraf94Add(&traf94->remoteReadBytes, 16);
+           needReload |= flagThread && (vr[u + 1] != flag);
+         }
++        ncclTraf94ReadyObservation(!__any_sync(WARP_MASK, needReload));
+         needReload &= (0 == checkAbort(abort, 1, spins));
+       } while (__any_sync(WARP_MASK, needReload));
++      ncclTraf94BeforeConsumption();
+ 
+       NVCC_PRAGMA_UNROLL_AUTO
+       for (int u = 0; u < ELEMS_PER_THREAD; u += 2) load128(ptr + u * WARP_SIZE, vr[u], vr[u + 1]);
+@@ -242,10 +257,14 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
+           NVCC_PRAGMA_UNROLL_AUTO
+           for (int u = 0; u < ELEMS_PER_THREAD; u += 2) {
+             load128(ptr + u * WARP_SIZE, vr[u], vr[u + 1]);
++            ncclTraf94Control* traf94 = ncclTraf94();
++            if (traf94 != nullptr) ncclTraf94Add(&traf94->remoteReadBytes, 16);
+             needReload |= flagThread && (vr[u + 1] != flag);
+           }
++          ncclTraf94ReadyObservation(!__any_sync(WARP_MASK, needReload));
+           needReload &= (0 == checkAbort(abort, 1, spins));
+         } while (__any_sync(WARP_MASK, needReload));
++        ncclTraf94BeforeConsumption();
+ 
+         NVCC_PRAGMA_UNROLL_AUTO
+         for (int u = 0; u < ELEMS_PER_THREAD; u += 2) load128(ptr + u * WARP_SIZE, vr[u], vr[u + 1]);
+@@ -276,14 +295,28 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
+         uint64_t* ptr = sendPtr(i) + ll128Offset;
+         NVCC_PRAGMA_UNROLL_AUTO
+         for (int u = 0; u < ELEMS_PER_THREAD; u += 2) {
++          ncclTraf94BeforePublication();
+           store128(ptr + u * WARP_SIZE, v[u], flagThread ? flag : v[u + 1]);
++          ncclTraf94Published();
++          ncclTraf94Control* traf94 = ncclTraf94();
++          if (traf94 != nullptr) {
++            ncclTraf94Add(&traf94->remoteWriteBytes, 16);
++            ncclTraf94Add(&traf94->tailPublications, 1);
++          }
+         }
+       }
+       uint64_t flag = sendFlag(0);
+       uint64_t* ptr = sendPtr(0) + ll128Offset;
+       NVCC_PRAGMA_UNROLL_AUTO
+       for (int u = 0; u < ELEMS_PER_THREAD; u += 2) {
++        ncclTraf94BeforePublication();
+         store128(ptr + u * WARP_SIZE, v[u], flagThread ? flag : v[u + 1]);
++        ncclTraf94Published();
++        ncclTraf94Control* traf94 = ncclTraf94();
++        if (traf94 != nullptr) {
++          ncclTraf94Add(&traf94->remoteWriteBytes, 16);
++          ncclTraf94Add(&traf94->tailPublications, 1);
++        }
+       }
+     }
+     /********************** End Send ************************/
+@@ -302,6 +335,10 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL128, P2p, isNetOffload>
+     int wireOffset = WireWordPerSlice * warp + 2 * wid;
+     const int nwarps = nthreads / WARP_SIZE;
+     nelem = nelem < 0 ? 0 : nelem;
++    ncclTraf94Control* traf94 = ncclTraf94();
++    if (traf94 != nullptr && traf94->forceEmpty) nelem = 0;
++    if (tid == 0 && traf94 != nullptr && traf94->diagnostic && SRC && nelem > 0)
++      ncclTraf94Add(&traf94->sourceLoadBytes, uint64_t(nelem) * sizeof(T));
+ 
+     if (SEND) waitSend(divUp(nelem, DataEltPerSlice) * WireWordPerSlice * sizeof(uint64_t));
+     barrier();
+@@ -372,6 +409,11 @@ public:
+     : redOp(redOpArg), tid(tid), nthreads(nthreads), wid(tid % WARP_SIZE), warp(tid / WARP_SIZE),
+       warpInBlock(threadIdx.x / WARP_SIZE), flagThread((tid % 8) == 7), group(group),
+       stepSize(ncclShmem.comm.buffSizes[NCCL_PROTO_LL128] / NCCL_STEPS / sizeof(uint64_t)) {
++    if (tid == 0) {
++      ncclTraf94Geometry(NCCL_PROTO_LL128, nthreads);
++      ncclTraf94PlacementEvidence(ncclTraf94PlacementNA);
++      ncclTraf94UserBuffer(inputBuf);
++    }
+     auto* channel = &ncclShmem.channel;
+     int nrecv = 0, nsend = 0;
+     while (nrecv < MaxRecv && recvPeers[nrecv] >= 0) {
+@@ -382,6 +424,9 @@ public:
+       loadSendConn(&channel->peers[sendPeers[nsend]]->send[connIndexSend], nsend);
+       nsend++;
+     }
++    if (tid == 0)
++      ncclTraf94PeerEvidence(nrecv == 0 ? -1 : recvPeers[0],
++                             nsend == 0 ? -1 : sendPeers[0]);
+     this->fan = Fan(nrecv, nsend);
+     // Coverity reports recvConn and sendConn being possibly NULL at this point but that won't actually
+     // happen given the two "while" loops just above.
+diff --git a/src/device/prims_simple.h b/src/device/prims_simple.h
+index d191dee..5571248 100644
+--- a/src/device/prims_simple.h
++++ b/src/device/prims_simple.h
+@@ -107,12 +107,17 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
+       int spins = 0;
+       while (connStepCache + (isSendNotRecv ? NCCL_STEPS : 0) < step + StepPerSlice) {
+         connStepCache = loadStepValue(connStepPtr);
++        ncclTraf94ReadyObservation(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0) >= step + StepPerSlice);
+         if (checkAbort(flags, Aborted, spins)) break;
+         // if (spins == 0) {
+         //   printf("r=%d b=%d t=%d SPUN OUT got=%d want=%d\n", ncclShmem.comm.rank, blockIdx.x, threadIdx.x,
+         //          int(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), int(step+StepPerSlice));
+         // }
+       }
++      // A no-spin ready observation is just as important as a failed poll: it
++      // is the proof required by the already-ready capability.
++      if (spins == 0) ncclTraf94ReadyObservation(true);
++      ncclTraf94BeforeConsumption();
+     }
+ 
+     if (flags & (Recv * RoleWaitRecv | Send * RoleWaitSend)) {
+@@ -155,6 +160,14 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
+         // coverity[dead_error_line]
+         ptrs[index] = connEltsFifo + (step % NCCL_STEPS) * connStepSize;
+       }
++      ncclTraf94Control* traf94 = ncclTraf94();
++      if (traf94 != nullptr && traf94->diagnostic && nelts > 0) {
++        uint64_t bytes = uint64_t(nelts) * sizeof(T);
++        if (!isSendNotRecv && DirectRecv && (flags & DirectRead))
++          ncclTraf94Add(&traf94->remoteReadBytes, bytes);
++        if (isSendNotRecv && DirectSend && (flags & DirectWrite))
++          ncclTraf94Add(&traf94->remoteWriteBytes, bytes);
++      }
+       if (flags & NetDeviceUnpack) {
+         ncclNetDeviceIncrementHead(group, index);
+       }
+@@ -166,10 +179,19 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
+   inline __device__ void postPeer(bool dataStored) {
+     if (flags & (Recv * RolePostRecv | Send * RolePostSend)) {
+       step += StepPerSlice;
++      ncclTraf94BeforePublication();
+       if (Send && (flags & RolePostSend) && (dataStored || (flags & ConnFifoEnabled))) {
+         fence_acq_rel_sys();
+       }
+       st_relaxed_sys_global(connStepPtr, step);
++      ncclTraf94Published();
++      ncclTraf94Control* traf94 = ncclTraf94();
++      if (traf94 != nullptr && Send && (flags & RolePostSend))
++        ncclTraf94Add(&traf94->tailPublications, 1);
++      if (traf94 != nullptr && Recv && (flags & RolePostRecv)) {
++        ncclTraf94Add(&traf94->headPublications, 1);
++        ncclTraf94FinishConsumerStep();
++      }
+     }
+   }
+ 
+@@ -181,6 +203,8 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
+     constexpr int Dst = DstBuf != -1;
+ 
+     nelem = nelem < 0 ? 0 : nelem;
++    ncclTraf94Control* traf94 = ncclTraf94();
++    if (traf94 != nullptr && traf94->forceEmpty) nelem = 0;
+     int sliceSize = stepSize * StepPerSlice;
+     sliceSize = max(divUp(nelem, 16 * SlicePerChunk) * 16, sliceSize / 32);
+     int slice = 0;
+@@ -229,6 +253,13 @@ class Primitives<T, RedOp, Fan, Direct, ProtoSimple<SlicePerChunk, StepPerSlice,
+         /* if user abort the kernel, we don't need to actually perform copy/reduce; just set size
+          * to 0 to avoid unnecessary workload. */
+         int workSize = ncclShmem.aborted ? 0 : sliceSize;
++        if (tid == 0 && traf94 != nullptr && traf94->diagnostic && workSize > 0) {
++          if (Src) ncclTraf94Add(&traf94->sourceLoadBytes, uint64_t(workSize) * sizeof(T));
++          // Non-direct Simple traffic stages payload through the connection
++          // FIFO.  Direct placement bytes are attributed at waitPeer below.
++          if ((flags & (DirectRead | DirectWrite)) == 0)
++            ncclTraf94Add(&traf94->sharedStagingBytes, uint64_t(workSize) * sizeof(T));
++        }
+         if (flags & AnyNetDeviceUnpack) {
+           ncclNetDeviceUnpack<Recv>(tid, tidInBlock, nworkers, group,
+                                     ncclShmem.groups[group].devicePlugin.unpack.unpackNetDeviceIndexMask, Src,
+@@ -623,6 +654,10 @@ public:
+       // Connect to ranks in sendPeers/recvPeers
+       // For send operations, we need an extra warp to overlap the threadfence and the copy
+       this->nworkers = nthreads - (MaxSend > 0 && nthreads >= NCCL_SIMPLE_EXTRA_GROUP_IF_NTHREADS_GE ? WARP_SIZE : 0);
++      if (tid == 0) {
++        ncclTraf94Geometry(NCCL_PROTO_SIMPLE, this->nworkers);
++        ncclTraf94UserBuffer(inputBuf);
++      }
+ 
+       int nrecv = 0, nsend = 0;
+       // Yes, for some template arguments this code will be unreachable.  That's fine.
+@@ -630,6 +665,9 @@ public:
+       while (nrecv < MaxRecv && recvPeers[nrecv] != -1) nrecv++;
+       // coverity[dead_error_line]
+       while (nsend < MaxSend && sendPeers[nsend] != -1) nsend++;
++      if (tid == 0)
++        ncclTraf94PeerEvidence(nrecv == 0 ? -1 : recvPeers[0],
++                               nsend == 0 ? -1 : sendPeers[0]);
+       this->fan = Fan(nrecv, nsend);
+ 
+       constexpr int ThreadPerSync =
+@@ -695,6 +733,15 @@ public:
+       // coverity[negative_returns:FALSE] => coverity thinks that index could be -1 but that's not actually the case
+       // coverity[var_deref_model] => coverity thinks work can dereferenced if NULL but this is not the case
+       setDataPtrs(inputBuf, outputBuf, redOpArg, (struct ncclDevWorkCollReg*)collWork, sendIpcReg || recvIpcReg, peer);
++      if (flags & (RoleWaitRecv | RoleWaitSend)) {
++        // Record connection flags after registration and pointer exchange have
++        // selected the actual data path.  This remains meaningful for an empty
++        // payload, where byte counters correctly stay zero.
++        int placement = (flags & DirectRead) ? ncclTraf94BufferedRead :
++                        (flags & DirectWrite) ? ncclTraf94DirectWrite :
++                                                ncclTraf94Buffered;
++        ncclTraf94PlacementEvidence(placement);
++      }
+       // coverity[uninit_member] => coverity thinks fan.n is not initialized
+ 
+       if (barrierAny(flags & NetDeviceUnpack)) {
+diff --git a/src/device/reduce_kernel.h b/src/device/reduce_kernel.h
+index 7f21d53..717a206 100644
+--- a/src/device/reduce_kernel.h
++++ b/src/device/reduce_kernel.h
+@@ -196,6 +196,13 @@ __device__ __forceinline__ BytePack<BytePackOf<PackA>::Size * sizeof(B) / sizeof
+ 
+ template <typename Fn, typename Pack>
+ __device__ __forceinline__ Pack applyReduce(Fn fn, Pack a, Pack b) {
++#if NCCL_TRAF94_REDUCE_HOOK
++  // TRAF-94's copy arm retains the exact reduction-capable primitive geometry,
++  // input loads, and synchronization, changing only the arithmetic operation
++  // at its source site.  Returning the peer operand makes this an identity
++  // copy rather than an alternate collective or stand-alone CUDA kernel.
++  if (ncclTraf94CopyReduce()) return a;
++#endif
+   return fromPack<Pack>(Apply_Reduce_MaybeEmpty<Fn, BytePackOf<Pack>::Size / sizeof(typename Fn::EltType)>::reduce(
+     fn, toPack(a), toPack(b)));
+ }
+diff --git a/src/device/sendrecv.h b/src/device/sendrecv.h
+index 1e18d89..8e24cd7 100644
+--- a/src/device/sendrecv.h
++++ b/src/device/sendrecv.h
+@@ -111,6 +111,15 @@ struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
+     // to have a balanced number of reading and writing threads even if that
+     // leaves warps unused.
+     nWarpPerWork = nSendWarpPerWork + nRecvWarpPerWork;
++    ncclTraf94Control* traf94 = ncclTraf94();
++    if (traf94 != nullptr && nWorks == 1) {
++      // A one-direction TRAF-94 rank owns the whole block.  Upstream balances
++      // send/recv warps even when only one direction is live, which would make
++      // the requested primitive geometry impossible to realize.
++      nWarpPerWork = nWarps;
++      nSendWarpPerWork = nWarps;
++      nRecvWarpPerWork = nWarps;
++    }
+     // The work index this warp belongs to: workIx = wid/nWarpPerWork
+     int workIx = __popc(__ballot_sync(~0u, (lane + 1) * nWarpPerWork <= wid));
+ 
+@@ -160,14 +169,18 @@ struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
+       reduceCopy<COLL_UNROLL, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs=*/0>(
+         subtid, subtn, 0, false, 1, &work->sendAddr, 1, &work->recvAddr, (ssize_t)work->sendBytes);
+     } else if (isSend) {
+-      if (work->sendProtoLL) {
++      if (work->sendProtocol == NCCL_PROTO_LL) {
+         runSend<ProtoLL>(subtid, subtn, group, work);
++      } else if (work->sendProtocol == NCCL_PROTO_LL128) {
++        runSend<ProtoLL128>(subtid, subtn, group, work);
+       } else {
+         runSend<ProtoSimple<1, 1>>(subtid, subtn, group, work);
+       }
+     } else {
+-      if (work->recvProtoLL) {
++      if (work->recvProtocol == NCCL_PROTO_LL) {
+         runRecv<ProtoLL>(subtid, subtn, group, work);
++      } else if (work->recvProtocol == NCCL_PROTO_LL128) {
++        runRecv<ProtoLL128>(subtid, subtn, group, work);
+       } else {
+         runRecv<ProtoSimple<1, 1>>(subtid, subtn, group, work);
+       }
+diff --git a/src/enqueue/enqueue.cc b/src/enqueue/enqueue.cc
+index eccaf43..b505aff 100644
+--- a/src/enqueue/enqueue.cc
++++ b/src/enqueue/enqueue.cc
+@@ -6,6 +6,7 @@
+  *************************************************************************/
+ 
+ #include "enqueue.h"
++#include "traf94.h"
+ #include "argcheck.h"
+ #include "coll_net.h"
+ #include "gdrwrap.h"
+@@ -713,7 +714,11 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
+       task->nChannels = (uint8_t)nChannels;
+       devWork->collnet.count = task->count;
+       devWork->collnet.chunkCount = chunkSize / ncclTypeSize(task->datatype);
+-      devWork->direct = directFlags;
++      devWork->direct =
++        comm->traf94Enabled && comm->traf94Protocol == NCCL_PROTO_SIMPLE &&
++            comm->traf94Placement == ncclTraf94BufferedRead
++          ? NCCL_P2P_READ
++          : directFlags;
+ 
+       uint64_t proxyOpId = uint64_t(plan->collOpCount++) << 1 | 0;
+       for (int c = devWork->channelLo; c <= (int)devWork->channelHi; c++) {
+@@ -811,7 +816,11 @@ static ncclResult_t scheduleCollTasksToPlan(struct ncclComm* comm, struct ncclKe
+                                    &directFlags, &proxyOpMid));
+         devWork->cbd.chunkGrainsMid = chunkSize / grainSize;
+       }
+-      devWork->direct = directFlags;
++      devWork->direct =
++        comm->traf94Enabled && comm->traf94Protocol == NCCL_PROTO_SIMPLE &&
++            comm->traf94Placement == ncclTraf94BufferedRead
++          ? NCCL_P2P_READ
++          : directFlags;
+ 
+       // Update the current channel and vacant traffic budget.
+       if (countHi != 0) {
+@@ -1002,9 +1011,15 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
+       }
+     }
+ 
+-    // Select protocol (LL vs SIMPLE) used based on payload per channel
+-    if (bytes[dir] != -1) protoLL[dir] &= bytes[dir] <= nChannels[dir] * ncclParamP2pLLThreshold();
+-    protocol[dir] = protoLL[dir] ? NCCL_PROTO_LL : NCCL_PROTO_SIMPLE;
++    // The ordinary P2P path retains NCCL's LL/Simple heuristic.  TRAF-94 is a
++    // source experiment with an explicit protocol axis, including LL128 which
++    // upstream SendRecv does not normally select.
++    if (comm->traf94Enabled) {
++      protocol[dir] = comm->traf94Protocol;
++    } else {
++      if (bytes[dir] != -1) protoLL[dir] &= bytes[dir] <= nChannels[dir] * ncclParamP2pLLThreshold();
++      protocol[dir] = protoLL[dir] ? NCCL_PROTO_LL : NCCL_PROTO_SIMPLE;
++    }
+ 
+     stepSize[dir] = comm->buffSizes[protocol[dir]] / NCCL_STEPS;
+     if (protocol[dir] == NCCL_PROTO_SIMPLE) stepSize[dir] = comm->p2pChunkSize;
+@@ -1024,7 +1039,9 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
+     chunkSize[dir] = chunkDataSize[dir];
+     if (protocol[dir] == NCCL_PROTO_LL) chunkSize[dir] *= 2;
+ 
+-    if (p2pTasks[dir] && p2pTasks[dir]->allowUB) {
++    bool traf94AllowsRegistration =
++      !comm->traf94Enabled || comm->traf94Placement == ncclTraf94BufferedRead;
++    if (p2pTasks[dir] && p2pTasks[dir]->allowUB && traf94AllowsRegistration) {
+       if (network[dir]) {
+         bool pxnUsed = !ncclPxnDisable(comm) && comm->isAllNvlink && comm->maxLocalRanks > 1;
+         if (bytes[dir] > 0 && proxySameProcess[dir] && protocol[dir] == NCCL_PROTO_SIMPLE && (!pxnUsed)) {
+@@ -1051,6 +1068,12 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
+         struct ncclChannelPeer** channelPeers = comm->channels[channelId].peers;
+         struct ncclConnector* conn =
+           dir ? &channelPeers[peerRank]->send[connIndex] : &channelPeers[peerRank]->recv[connIndex];
++        if (comm->traf94Enabled && comm->traf94Placement == ncclTraf94BufferedRead) {
++          // Force the DirectRead variant as an explicit experimental control;
++          // topology normally chooses DirectWrite on this H100 NVLink node.
++          conn->conn.flags &= ~(NCCL_P2P_WRITE | NCCL_P2P_READ);
++          conn->conn.flags |= NCCL_P2P_READ;
++        }
+         void* regAddr = NULL;
+         if (conn->conn.flags & (NCCL_P2P_WRITE | NCCL_P2P_READ)) {
+           // We require users registering buffers on both sides
+@@ -1092,7 +1115,7 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
+   work->nP2pChannels = comm->p2pnChannels;
+   work->channelBase = base;
+   work->nSendChannels = nChannels[1];
+-  work->sendProtoLL = protoLL[1];
++  work->sendProtocol = protocol[1];
+   work->sendNetReg = netRegistered[1];
+   work->sendIpcReg = ipcRegistered[1];
+   work->sendChunkSize_u32fp8 = chunkDataSize_u32fp8[1];
+@@ -1100,7 +1123,7 @@ static ncclResult_t addP2pToPlan(struct ncclComm* comm, struct ncclKernelPlan* p
+   work->sendAddr = sendAddr;
+   work->sendBytes = sendBytes == -1 ? 0 : sendBytes;
+   work->nRecvChannels = nChannels[0];
+-  work->recvProtoLL = protoLL[0];
++  work->recvProtocol = protocol[0];
+   work->recvNetReg = netRegistered[0];
+   work->recvIpcReg = ipcRegistered[0];
+   work->recvChunkSize_u32fp8 = chunkDataSize_u32fp8[0];
+@@ -1220,7 +1243,17 @@ static ncclResult_t scheduleP2pTasksToPlan(struct ncclComm* comm, int* p2pEpoch,
+   int nRanks = comm->nRanks;
+   struct ncclKernelPlanner::Peer* peers = comm->planner.peers;
+ 
+-  plan->threadPerBlock = std::max(plan->threadPerBlock, NCCL_MAX_NTHREADS);
++  if (comm->traf94Enabled) {
++    int threads = comm->traf94WorkingWarps * WARP_SIZE;
++    // Simple's send primitive converts one allocated warp into its dedicated
++    // synchronization group.  Only a rank with a live send needs that warp.
++    if (comm->traf94Protocol == NCCL_PROTO_SIMPLE &&
++        comm->planner.nTasksP2pSend != 0)
++      threads += WARP_SIZE;
++    plan->threadPerBlock = std::max(plan->threadPerBlock, threads);
++  } else {
++    plan->threadPerBlock = std::max(plan->threadPerBlock, NCCL_MAX_NTHREADS);
++  }
+   if (!plan->kernelSpecialized) {
+     plan->kernelFn = ncclDevKernelForFunc[ncclDevFuncId_P2p()];
+     plan->kernelSpecialized = ncclDevKernelForFuncIsSpecialized[ncclDevFuncId_P2p()];
+diff --git a/src/include/comm.h b/src/include/comm.h
+index d12e86e..1ee0560 100644
+--- a/src/include/comm.h
++++ b/src/include/comm.h
+@@ -602,6 +602,13 @@ struct ncclComm {
+   bool initAlgoChannels[NCCL_NUM_ALGORITHMS];
+   bool runtimeConn; // if dynamic connection is supported
+   bool directMode; // if any process manages more than one local rank
++  // Host shadows for the explicitly enabled TRAF-94 P2P probe.  They only
++  // select launch geometry/protocol; the managed control block remains the
++  // device-side source of intervention state and realized evidence.
++  bool traf94Enabled;
++  int traf94Protocol;
++  int traf94Placement;
++  int traf94WorkingWarps;
+   int cuMemSupport;
+ 
+   uint64_t magic; // Magic number for all network communication. Not a security key -- only goal is to detect
+diff --git a/src/include/device.h b/src/include/device.h
+index 56201ef..60a53ce 100644
+--- a/src/include/device.h
++++ b/src/include/device.h
+@@ -251,7 +251,7 @@ struct alignas(16) ncclDevWorkP2p {
+   // Chunk size stored in 8 bits via u32fp8Encode/Decode.
+   uint8_t sendChunkSize_u32fp8, recvChunkSize_u32fp8;
+ 
+-  uint8_t sendProtoLL:1, recvProtoLL:1;
++  uint8_t sendProtocol, recvProtocol;
+   uint8_t sendNetReg:1, recvNetReg:1;
+   uint8_t sendIpcReg:1, recvIpcReg:1;
+   uint8_t profilerEnabled:1;
+@@ -465,6 +465,12 @@ struct ncclKernelComm {
+   bool p2pCrossClique;
+   int isAllNvlink;
+ 
++  // Optional pointer used only by the versioned TRAF-94 experimental build.
++  // A null pointer preserves upstream behavior.  The pointed-to ABI is kept in
++  // traf94.h and is deliberately not embedded here so ordinary communicator
++  // state remains small.
++  struct ncclTraf94Control* traf94;
++
+   int* denseToUserRank;
+ 
+   // Flag to ask NCCL kernels to abort
+diff --git a/src/init.cc b/src/init.cc
+index de6b6e6..4d44cd7 100644
+--- a/src/init.cc
++++ b/src/init.cc
+@@ -6,6 +6,7 @@
+  *************************************************************************/
+ 
+ #include "nccl.h"
++#include "traf94.h"
+ #include "channel.h"
+ #include "nvmlwrap.h"
+ #include "gdrwrap.h"
+@@ -3812,3 +3813,22 @@ ncclResult_t ncclCommUserRank(const ncclComm_t comm, int* rank) {
+   *rank = comm->rank;
+   return ncclSuccess;
+ }
++
++/*
++ * Bind a managed-memory diagnostic/intervention block to one communicator.
++ * The pointer is copied into device communicator state rather than retained in
++ * host state, so kernel launches continue through NCCL's normal argument path.
++ * Passing nullptr restores the upstream behavior.
++ */
++NCCL_API(ncclResult_t, ncclTraf94SetControl, ncclComm_t comm, struct ncclTraf94Control* control);
++ncclResult_t ncclTraf94SetControl(ncclComm_t comm, struct ncclTraf94Control* control) {
++  NCCLCHECK(CommCheck(comm, "Traf94SetControl", "comm"));
++  NCCLCHECK(ncclCommEnsureReady(comm));
++  CUDACHECK(cudaSetDevice(comm->cudaDev));
++  NCCLCHECK(ncclCudaMemcpy(&comm->devComm->traf94, &control, 1));
++  comm->traf94Enabled = control != nullptr && control->magic == NCCL_TRAF94_MAGIC && control->enabled;
++  comm->traf94Protocol = comm->traf94Enabled ? control->requestedProtocol : NCCL_PROTO_SIMPLE;
++  comm->traf94Placement = comm->traf94Enabled ? control->requestedPlacement : ncclTraf94PlacementNA;
++  comm->traf94WorkingWarps = comm->traf94Enabled ? control->requestedWorkingWarps : 0;
++  return ncclSuccess;
++}
+diff --git a/src/nccl.h.in b/src/nccl.h.in
+index 2896f52..bdf5b10 100644
+--- a/src/nccl.h.in
++++ b/src/nccl.h.in
+@@ -34,6 +34,7 @@ extern "C" {
+ 
+ /* Opaque handle to communicator */
+ typedef struct ncclComm* ncclComm_t;
++struct ncclTraf94Control;
+ typedef struct ncclWindow_vidmem* ncclWindow_t;
+ #define NCCL_COMM_NULL NULL
+ 
+@@ -382,6 +383,9 @@ ncclResult_t pncclCommCuDevice(const ncclComm_t comm, int* device);
+ ncclResult_t  ncclCommUserRank(const ncclComm_t comm, int* rank);
+ ncclResult_t pncclCommUserRank(const ncclComm_t comm, int* rank);
+ 
++/* Experimental API used only by simLLM's versioned TRAF-94 probe. */
++ncclResult_t  ncclTraf94SetControl(ncclComm_t comm, struct ncclTraf94Control* control);
++
+ /* Register CUDA buffer for zero-copy operation */
+ ncclResult_t  ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
+ ncclResult_t pncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
+diff --git a/src/transport/p2p.cc b/src/transport/p2p.cc
+index 5acd7c0..0326b9a 100644
+--- a/src/transport/p2p.cc
++++ b/src/transport/p2p.cc
+@@ -12,6 +12,7 @@
+ #include "shmutils.h"
+ #include "p2p.h"
+ #include "transport.h"
++#include "traf94.h"
+ #include "mem_manager.h"
+ #include "shm.h"
+ #include "register_inline.h"
+@@ -405,6 +406,8 @@ ncclResult_t p2pSendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
+   info->read = useRead;
+   // For CollNet, use write for scatter-reduce (conn 1), read for broadcast-gather (conn 0)
+   if (graph && connIndex == 1) info->read = 0;
++  if (comm->traf94Enabled && comm->traf94Protocol == NCCL_PROTO_SIMPLE)
++    info->read = comm->traf94Placement == ncclTraf94BufferedRead;
+   const char* useReadStr = info->read ? "/read" : "";
+ 
+   int sendSize = sizeof(struct ncclSendMem);
+@@ -485,6 +488,8 @@ ncclResult_t p2pRecvSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, st
+   info->read = useRead;
+   // For CollNet, use write for scatter-reduce (conn 1), read for broadcast-gather (conn 0)
+   if (graph && connIndex == 1) info->read = 0;
++  if (comm->traf94Enabled && comm->traf94Protocol == NCCL_PROTO_SIMPLE)
++    info->read = comm->traf94Placement == ncclTraf94BufferedRead;
+ 
+   int recvSize = sizeof(struct ncclRecvMem);
+   // For P2P Read the SIMPLE buffer is tagged on the end of the ncclSendMem structure
+diff --git a/src/include/traf94.h b/src/include/traf94.h
+new file mode 100644
+index 0000000..50fb96c
+--- /dev/null
++++ b/src/include/traf94.h
+@@ -0,0 +1,92 @@
++/*************************************************************************
++ * TRAF-94 experimental primitive instrumentation.
++ *
++ * This header is intentionally self-contained so the measurement harness and
++ * NCCL's host/device compilation see the identical ABI.  It is not a public
++ * NCCL API and must only be used with the source commit named by the study.
++ *************************************************************************/
++#ifndef NCCL_TRAF94_H_
++#define NCCL_TRAF94_H_
++
++#include <stdint.h>
++
++#define NCCL_TRAF94_MAGIC 0x5452414639347631ULL /* "TRAF94v1" */
++#define NCCL_TRAF94_MAX_RANKS 8
++#define NCCL_TRAF94_MAX_CHANNELS 32
++
++enum ncclTraf94Family {
++  ncclTraf94Disabled = 0,
++  ncclTraf94AlreadyReady = 1,
++  ncclTraf94DelayedPublication = 2,
++  ncclTraf94DelayedConsumption = 3,
++  ncclTraf94Copy = 4,
++  ncclTraf94Sum = 5,
++};
++
++enum ncclTraf94Placement {
++  ncclTraf94PlacementNA = 0,
++  ncclTraf94Buffered = 1,
++  ncclTraf94BufferedRead = 2,
++  /* Evidence-only value: the node selected DirectWrite, not requested read. */
++  ncclTraf94DirectWrite = 3,
++};
++
++/*
++ * One managed-memory instance is shared by every rank in a probe process.
++ * Per-rank fields avoid cross-device timestamp arithmetic.  All counters are
++ * diagnostic evidence; the ordinary path leaves them untouched except for the
++ * compact geometry/timer fields explicitly required on every result row.
++ */
++struct alignas(16) ncclTraf94Control {
++  uint64_t magic;
++  uint32_t enabled;
++  uint32_t diagnostic;
++  uint32_t family;
++  uint32_t requestedProtocol;
++  uint32_t requestedPlacement;
++  uint32_t requestedWorkingWarps;
++  uint32_t producerRank;
++  uint32_t consumerRank;
++  uint32_t forceEmpty;
++  uint64_t delayCycles;
++  uint64_t usefulBytes;
++
++  uint32_t consumerStarted;
++  uint32_t producerReleased;
++  uint32_t unsupportedSite;
++  uint32_t reserved;
++
++  uint64_t readinessChecks;
++  uint64_t unsuccessfulChecks;
++  uint64_t successfulObservations;
++  uint64_t tailPublications;
++  uint64_t headPublications;
++  uint64_t sourceLoadBytes;
++  uint64_t sharedStagingBytes;
++  uint64_t remoteReadBytes;
++  uint64_t remoteWriteBytes;
++  uint64_t consumedSteps;
++
++  uint32_t realizedProtocol[NCCL_TRAF94_MAX_RANKS]; /* protocol enum + 1 */
++  uint32_t realizedBlockThreads[NCCL_TRAF94_MAX_RANKS];
++  uint32_t realizedWorkWarps[NCCL_TRAF94_MAX_RANKS];
++  uint32_t realizedChannelMask[NCCL_TRAF94_MAX_RANKS];
++  /* Bit N means at least one active wait role executed placement enum N. */
++  uint32_t realizedPlacementMask[NCCL_TRAF94_MAX_RANKS];
++  /* Peer rank + 1 by rank/channel; zero means that direction is absent. */
++  uint32_t realizedRecvPeer[NCCL_TRAF94_MAX_RANKS][NCCL_TRAF94_MAX_CHANNELS];
++  uint32_t realizedSendPeer[NCCL_TRAF94_MAX_RANKS][NCCL_TRAF94_MAX_CHANNELS];
++  uint64_t realizedSmMaskLo[NCCL_TRAF94_MAX_RANKS];
++  uint64_t realizedSmMaskHi[NCCL_TRAF94_MAX_RANKS];
++  uint64_t realizedSmMask2[NCCL_TRAF94_MAX_RANKS];
++  uint64_t observedInputPtr[NCCL_TRAF94_MAX_RANKS];
++  uint64_t intervalBegin[NCCL_TRAF94_MAX_RANKS];
++  uint64_t intervalEnd[NCCL_TRAF94_MAX_RANKS];
++  uint64_t observedDelay[NCCL_TRAF94_MAX_RANKS];
++  uint32_t consumptionDelayApplied[NCCL_TRAF94_MAX_RANKS];
++  uint32_t publicationDelayApplied[NCCL_TRAF94_MAX_RANKS];
++
++  uint64_t canary;
++};
++
++#endif
+

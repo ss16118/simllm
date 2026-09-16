@@ -122,7 +122,7 @@ def capability_plan_command(args: argparse.Namespace) -> None:
     unique: dict[str, dict[str, Any]] = {}
     for cell in inventory["cells"]:
         key = cell["capability_key"]
-        unique.setdefault(key, {
+        candidate = {
             "schema": "simllm-nccl-primitive-capability-request-v1",
             "manifest_digest": inventory["manifest_digest"],
             "inventory_digest": inventory["inventory_digest"],
@@ -138,7 +138,28 @@ def capability_plan_command(args: argparse.Namespace) -> None:
                     "family",
                 )
             },
-        })
+            # Grouping avoids repeating a diagnostic for every timing value,
+            # but the device probe still needs concrete controls to launch.
+            # The first cell is deterministic because inventory expansion is
+            # ordered, so it is a reproducible representative pilot.
+            "requested": cell["requested"],
+        }
+        existing = unique.get(key)
+        # Within a support-equivalent group, use the strongest deterministic
+        # diagnostic: longest delay, most useful work, and rotating allocation.
+        # This prevents a zero-delay/one-word pilot from qualifying the harder
+        # members while avoiding redundant timing-grid diagnostics.
+        def pilot_score(row: Mapping[str, Any]) -> tuple[int, int, int, int]:
+            requested = row["requested"]
+            return (
+                int(requested.get("delay_cycles", 0)),
+                int(requested.get("useful_bytes_per_channel", requested.get("useful_bytes", 0))),
+                int(requested.get("reservations", 1)),
+                int(requested.get("working_set") == "rotating_64MiB"),
+            )
+
+        if existing is None or pilot_score(candidate) > pilot_score(existing):
+            unique[key] = candidate
     _write_jsonl(args.output, (unique[key] for key in sorted(unique)))
     print(json.dumps({"capability_count": len(unique), "output": str(args.output)}))
 

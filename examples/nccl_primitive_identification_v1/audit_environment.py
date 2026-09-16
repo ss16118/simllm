@@ -59,8 +59,17 @@ def _source_identity(source: Path) -> dict[str, Any]:
         "src/device/prims_ll.h",
         "src/device/prims_ll128.h",
         "src/device/prims_simple.h",
+        "src/device/reduce_kernel.h",
+        "src/device/sendrecv.h",
         "src/device/all_reduce.h",
         "src/device/common.h",
+        "src/enqueue/enqueue.cc",
+        "src/include/comm.h",
+        "src/include/device.h",
+        "src/include/traf94.h",
+        "src/init.cc",
+        "src/nccl.h.in",
+        "src/transport/p2p.cc",
     ):
         path = source / relative
         files.append({
@@ -106,10 +115,18 @@ def main() -> None:
     library = args.library.resolve(strict=True)
     nvcc = _command("nvcc", "--version").strip()
 
+    build_record = (
+        json.loads(args.build_record.read_text(encoding="utf-8"))
+        if args.build_record
+        else None
+    )
     reasons = []
     if source["head"] != extension["source_commit"]:
         reasons.append("source_commit_mismatch")
-    if source["dirty"]:
+    # A clean checkout is required for the upstream build.  The experimental
+    # probe build is allowed to contain only the versioned instrumentation
+    # patch recorded below; arbitrary dirty state remains fatal.
+    if source["dirty"] and build_record is None:
         reasons.append("source_checkout_dirty")
     if any(not row["present"] for row in source["files"]):
         reasons.append("required_source_file_missing")
@@ -133,9 +150,8 @@ def main() -> None:
     ):
         reasons.append("all_peer_nvlink_topology_not_observed")
 
-    build_record = None
     if args.build_record:
-        build_record = json.loads(args.build_record.read_text(encoding="utf-8"))
+        assert build_record is not None
         unsigned = dict(build_record)
         recorded_digest = unsigned.pop("build_record_digest", None)
         if (
@@ -147,6 +163,13 @@ def main() -> None:
             reasons.append("build_record_source_mismatch")
         if build_record.get("library_sha256") != _sha256(library):
             reasons.append("build_record_library_mismatch")
+        if source["dirty"]:
+            if not build_record.get("instrumentation_patch_sha256"):
+                reasons.append("dirty_source_without_instrumentation_patch")
+            if build_record.get("instrumentation_dirty_paths") != source["dirty"]:
+                reasons.append("instrumented_dirty_paths_changed")
+            if build_record.get("source_files") != source["files"]:
+                reasons.append("instrumented_source_files_changed")
     else:
         # A library filename or package version cannot prove which source tree
         # produced its bytes.  Requiring a build record closes that provenance
