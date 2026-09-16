@@ -768,6 +768,23 @@ def test_campaign_resume_accepts_only_hash_verified_work(tmp_path):
     with pytest.raises(ValueError, match="changed after completion"):
         _completed_indices(schedule, tmp_path)
 
+    # Restore the hashed payload, then prove that an explicit post-run
+    # contention disposition overrides otherwise complete immutable evidence.
+    (work / "observations.jsonl").write_bytes(payload)
+    (work / "CONTAMINATED.json").write_text(
+        json.dumps(
+            {
+                "schema": "simllm-nccl-primitive-contamination-v1",
+                "status": "void_external_context_at_post_run_boundary",
+                "work_index": 0,
+                "applications": [{"gpu_uuid": "GPU-a", "pid": 99}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="external-contention marker"):
+        _completed_indices(schedule, tmp_path)
+
 
 def test_mock_probe_exercises_process_artifacts_collection_and_validation(tmp_path, manifest):
     """Exercise orchestration only; the mock deliberately makes no GPU claim."""

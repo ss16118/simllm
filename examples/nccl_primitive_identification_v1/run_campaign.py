@@ -270,7 +270,35 @@ def main() -> None:
                 },
             )
             raise SystemExit(completed_process.returncode)
-        _verify_work_artifacts(args.output / f"work-{index:06d}")
+        workdir = args.output / f"work-{index:06d}"
+        # Query only after the timed child and its CUDA contexts have exited.
+        # Polling NVML during an ordinary sample would itself be an observer and
+        # violate the frozen design.  A context present at this first post-run
+        # boundary might have started during the sample, so the completed work
+        # is conservatively marked and cannot be resumed or collected.  The
+        # operator retains it for audit, moves the directory aside, and reruns
+        # that frozen work index after another stable-idle boundary.
+        post_run_applications = _compute_apps(monitored_uuids)
+        if post_run_applications:
+            contamination = {
+                "schema": "simllm-nccl-primitive-contamination-v1",
+                "status": "void_external_context_at_post_run_boundary",
+                "work_index": index,
+                "applications": post_run_applications,
+            }
+            _write_json_atomic(workdir / "CONTAMINATED.json", contamination)
+            _write_json_atomic(
+                status_path,
+                {
+                    "status": "contaminated",
+                    "completed": len(completed),
+                    "total": total,
+                    "work_index": index,
+                    "applications": post_run_applications,
+                },
+            )
+            raise SystemExit(86)
+        _verify_work_artifacts(workdir)
         completed.add(index)
         _write_json_atomic(
             status_path,

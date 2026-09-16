@@ -512,6 +512,9 @@ def _write_artifact_manifest(workdir: Path) -> None:
 def _verify_work_artifacts(workdir: Path) -> None:
     """Verify a work directory before any of its rows enter the merged file."""
 
+    contamination_path = workdir / "CONTAMINATED.json"
+    if contamination_path.exists():
+        raise ValueError(f"{workdir} has an unresolved external-contention marker")
     complete_path = workdir / "COMPLETE.json"
     artifacts_path = workdir / "artifacts.json"
     if not complete_path.is_file() or not artifacts_path.is_file():

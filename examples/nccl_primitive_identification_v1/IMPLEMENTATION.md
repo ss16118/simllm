@@ -26,6 +26,10 @@
   applying `CUDA_VISIBLE_DEVICES`, and requires a stable idle boundary on the
   selected GPUs before launching each item. It intentionally never overlaps
   two measurements because nominally disjoint rank sets still share NVSwitch.
+  Its first post-run action rechecks selected-GPU contexts. A newly visible
+  external context writes `CONTAMINATED.json`, stops the campaign, and makes
+  both resume and collection reject that directory until the retained attempt
+  is moved aside and the same frozen index is rerun.
 - `PROBE_CONTRACT.md` defines the required source-faithful CUDA/NCCL executable.
 - `nccl-2.31.2-traf94.patch` is the reviewable instrumentation/intervention
   patch for the pinned source, and `SOURCE_PROBE_DESIGN.md` maps each frozen
@@ -164,6 +168,12 @@ Validation preserves raw rows even when a timer boundary is invalid. It emits
 guards hold, names the complete `(cell, timer)` scope, and binds the report to
 the observation-file SHA-256. Analysis must remove every row in a named void
 scope; it may not discard only the repetitions that exposed the violation.
+
+The campaign does not poll NVML while an ordinary probe is timing. Such a poll
+would be an observer inside the sample and would require its own perturbation
+study. Stable pre-run idle samples plus the immediate post-run check instead
+bracket every accepted work item. A post-run context is treated conservatively
+as possible overlap even though it may have started just after probe exit.
 
 ## H100 implementation status
 
