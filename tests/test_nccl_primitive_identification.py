@@ -39,6 +39,10 @@ from examples.nccl_primitive_identification_v1.probe import (
     _native_arguments,
     _qualification_failures,
 )
+from examples.nccl_primitive_identification_v1.publish_results import (
+    build_result,
+    render_markdown,
+)
 from examples.nccl_primitive_identification_v1.run_campaign import (
     _completed_indices,
     _compute_apps,
@@ -491,6 +495,135 @@ def test_identification_fit_locks_before_confirmation_scoring():
     assert score["summary"]["resolved_interventions"] == 1
     assert score["summary"]["accepted_resolved_interventions"] == 1
     assert score["summary"]["all_resolved_interventions_accepted"] is True
+
+
+def test_compact_result_publisher_cross_binds_fit_score_and_raw_evidence():
+    manifest_digest = "1" * 64
+    inventory_digest = "2" * 64
+    observations_sha256 = "3" * 64
+    fit = {
+        "schema": "simllm-nccl-primitive-identification-fit-v1",
+        "manifest_digest": manifest_digest,
+        "inventory_digest": inventory_digest,
+        "observations_sha256": observations_sha256,
+        "fit_scope": "identification_cells_only",
+        "confirmation_rows_used": 0,
+        "void_scopes": [],
+        "anchors": [
+            {
+                "cell_id": "data",
+                "stage": "data_work",
+                "timer": "cuda_event",
+                "protocol": "LL",
+                "simple_placement": "source_default",
+                "family": "sum",
+                "requested": {"useful_bytes": 1920, "working_set": "reused"},
+                "summary": {
+                    "process_medians_ns": [100, 101, 102, 103, 104],
+                    "median_ns": 102,
+                    "q1_ns": 101,
+                    "q3_ns": 103,
+                    "iqr_ns": 2,
+                },
+            }
+        ],
+        "paired_contrasts": [
+            {
+                "stage": "data_work",
+                "timer": "cuda_event",
+                "protocol": "LL",
+                "simple_placement": "source_default",
+                "factor": "reduction",
+                "paired_median_delta": 7,
+                "resolved": True,
+            }
+        ],
+        "publication_response": [],
+        "separability": {
+            "contrast_count": 1,
+            "resolved_separate_terms": 1,
+            "joint_intervals": 0,
+            "rule": "frozen",
+        },
+        "confirmation_model": {"kind": "test"},
+    }
+    fit["fit_digest"] = content_digest(fit)
+    scored = {
+        "timer": "cuda_event",
+        "protocol": "LL",
+        "simple_placement": "source_default",
+        "factor": "delay_cycles",
+        "acceptance_applicable": True,
+        "accepted_resolved_delta": True,
+        "absolute_error": 1,
+        "acceptance_bound": 2,
+    }
+    score = {
+        "schema": "simllm-nccl-primitive-confirmation-score-v1",
+        "manifest_digest": manifest_digest,
+        "inventory_digest": inventory_digest,
+        "observations_sha256": observations_sha256,
+        "fit_digest": fit["fit_digest"],
+        "void_scopes": [],
+        "scored_interventions": [scored],
+        "summary": {
+            "intervention_count": 1,
+            "resolved_interventions": 1,
+            "unresolved_interventions": 0,
+            "accepted_resolved_interventions": 1,
+            "rejected_resolved_interventions": 0,
+            "has_resolved_interventions": True,
+            "all_resolved_interventions_accepted": True,
+            "acceptance_rule": "frozen",
+        },
+    }
+    score["score_digest"] = content_digest(score)
+    validation = {
+        "schema": "simllm-nccl-primitive-validation-v1",
+        "manifest_digest": manifest_digest,
+        "inventory_digest": inventory_digest,
+        "observations_sha256": observations_sha256,
+        "row_count": 300,
+        "cell_count": 1,
+        "fatal_guards": "valid",
+        "void_scopes": [],
+        "failures": [],
+    }
+    merged = {
+        "schema": "simllm-nccl-primitive-merged-artifacts-v1",
+        "manifest_digest": manifest_digest,
+        "inventory_digest": inventory_digest,
+        "observations_sha256": observations_sha256,
+        "row_count": 300,
+        "work_manifests": [{"work_index": 0}],
+    }
+
+    result = build_result(
+        validation=validation,
+        fit=fit,
+        score=score,
+        merged_artifacts=merged,
+        input_hashes={name: name[0] * 64 for name in ("validation", "fit", "score")},
+    )
+    assert result["outcome"] == "PASS"
+    assert result["identification"]["published_component_anchors"][0]["median_ns"] == 102
+    assert result["confirmation"]["groups"][0]["worst_error_over_bound"] == 0.5
+    assert "Outcome: **PASS**" in render_markdown(result)
+    unsigned = dict(result)
+    assert unsigned.pop("result_digest") == content_digest(unsigned)
+
+    changed = copy.deepcopy(score)
+    changed["observations_sha256"] = "4" * 64
+    changed.pop("score_digest")
+    changed["score_digest"] = content_digest(changed)
+    with pytest.raises(ValueError, match="does not match validation"):
+        build_result(
+            validation=validation,
+            fit=fit,
+            score=changed,
+            merged_artifacts=merged,
+            input_hashes={},
+        )
 
 
 def test_cli_writes_h100_plan_and_minimal_capability_plan(tmp_path):

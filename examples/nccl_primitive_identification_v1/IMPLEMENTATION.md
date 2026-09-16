@@ -13,6 +13,10 @@
   scorer. It intentionally works on process medians rather than treating all
   iterations as independent samples. `ANALYSIS_DESIGN.md` states the candidate
   equation, source-transfer assumptions, uncertainty rule, and claim boundary.
+- `publish_results.py` cross-binds validation, merged artifacts, the locked fit,
+  and held-out score. It emits a compact self-digested JSON authority and a
+  deterministic Markdown review without copying bulk rows or every per-process
+  contrast into Git.
 - `record_build.py` binds either a clean pinned checkout or its exactly named
   versioned instrumentation patch, the build command, compiler versions,
   source-file hashes, and output library bytes into one self-digested record.
@@ -153,6 +157,14 @@ python examples/nccl_primitive_identification_v1/run_study.py score \
   --rows /capture/observations.jsonl \
   --fit /capture/identified-parameters.json \
   --output /capture/confirmation-score.json
+
+python examples/nccl_primitive_identification_v1/publish_results.py \
+  --validation /capture/validation.json \
+  --fit /capture/identified-parameters.json \
+  --score /capture/confirmation-score.json \
+  --merged-artifacts /capture/merged-artifacts.json \
+  --output-json examples/nccl_primitive_identification_v1/h100-results.json \
+  --output-markdown examples/nccl_primitive_identification_v1/RESULTS.md
 ```
 
 Each `run-one --work-index N` command is independent and can be assigned to a
