@@ -57,6 +57,13 @@ producer's actual local delay. The zero-delay control includes that same
 signal. Do not subtract timestamps from different GPUs: they need not share a
 clock. Time each consumer interval locally; use same-device CUDA events and
 host wall time as separate boundaries. A CPU sleep is not the delay control.
+The source-local interval is expressed in nanoseconds and must be contained by
+the matching consumer CUDA-event interval, expressed in microseconds. A source
+interval larger than that outer boundary indicates a missing or corrupt inner
+timestamp, not a long primitive. Retain the raw row and void the complete
+`(cell, same_device_interval)` scope so one process or repetition is not
+selected away; the independently valid CUDA-event and host-wall scopes remain
+separate evidence.
 For ready-peer cells, a pre-timing dependency establishes publication first;
 the diagnostic must verify zero unsuccessful readiness checks.
 

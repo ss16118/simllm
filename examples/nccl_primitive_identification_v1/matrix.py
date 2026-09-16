@@ -33,6 +33,11 @@ REQUIRED_SOURCE_COUNTS = frozenset((
     "remote_write_bytes",
     "consumed_steps",
 ))
+TIMER_UNITS = {
+    "same_device_interval": "ns",
+    "cuda_event": "us",
+    "host_wall": "us",
+}
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -410,8 +415,13 @@ def validate_observation(
         raise ValueError(f"observation omitted realized controls: {sorted(unrealized)}")
     if row["timer"] not in manifest["timing_boundaries"]:
         raise ValueError("observation uses an undeclared timer boundary")
-    if row["units"] not in {"cycles", "ns", "us", "ps"}:
-        raise ValueError("observation uses unsupported units")
+    expected_unit = TIMER_UNITS.get(row["timer"])
+    if expected_unit is None:
+        raise ValueError("observation timer has no frozen unit")
+    if row["units"] != expected_unit:
+        raise ValueError(
+            f"observation timer {row['timer']!r} requires unit {expected_unit!r}"
+        )
     for name in ("raw_duration", "observed_local_delay"):
         value = row[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -440,6 +450,65 @@ def validate_observation(
         raise ValueError("process_id is outside the frozen process inventory")
     if repetition >= manifest["recorded_iterations"]:
         raise ValueError("repetition is outside the frozen iteration inventory")
+
+
+def timing_scope_voids(rows: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
+    """Identify timer scopes that violate a same-execution causal boundary.
+
+    ``same_device_interval`` starts and ends inside the consumer's primitive,
+    while ``cuda_event`` brackets that consumer stream around the same launch.
+    The inner interval therefore cannot exceed the outer event interval.  Both
+    clocks are local to that GPU; this comparison does not subtract timestamps
+    from different devices.  A violation voids the complete ``(cell, timer)``
+    scope rather than dropping only inconvenient repetitions or processes.
+
+    Raw rows stay immutable and complete.  The returned disposition is the
+    explicit overlay used by validation and analysis, as required by the v1
+    rule that a violated fatal guard retains evidence but voids affected scope.
+    """
+
+    grouped: dict[tuple[str, int, int], dict[str, Mapping[str, Any]]] = {}
+    for row in rows:
+        if row.get("phase") != "ordinary" or row.get("qualification") != "qualified":
+            continue
+        key = (str(row.get("cell_id")), int(row.get("process_id", -1)), int(row.get("repetition", -1)))
+        grouped.setdefault(key, {})[str(row.get("timer"))] = row
+
+    violations: dict[tuple[str, str, str], list[tuple[int, int, float, float]]] = {}
+    for (cell_id, process_id, repetition), timers in grouped.items():
+        device = timers.get("same_device_interval")
+        event = timers.get("cuda_event")
+        if device is None or event is None:
+            # Completeness validation owns missing timer rows.  This guard only
+            # classifies an observed pair and never invents a missing value.
+            continue
+        device_ns = float(device["raw_duration"])
+        event_ns = float(event["raw_duration"]) * 1_000.0
+        if device_ns <= event_ns:
+            continue
+        scope = (
+            cell_id,
+            "same_device_interval",
+            "inner_same_device_interval_exceeds_outer_cuda_event",
+        )
+        violations.setdefault(scope, []).append(
+            (process_id, repetition, device_ns, event_ns)
+        )
+
+    result = []
+    for (cell_id, timer, reason), instances in sorted(violations.items()):
+        result.append(
+            {
+                "cell_id": cell_id,
+                "timer": timer,
+                "reason": reason,
+                "violating_rows": len(instances),
+                "process_ids": sorted({item[0] for item in instances}),
+                "maximum_inner_ns": max(item[2] for item in instances),
+                "maximum_outer_ns": max(item[3] for item in instances),
+            }
+        )
+    return tuple(result)
 
 
 def completeness_failures(

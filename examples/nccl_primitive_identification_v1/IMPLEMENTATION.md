@@ -6,7 +6,8 @@
 - `h100-extension.json` names this node's architecture explicitly without
   changing or relabeling the A100/GH200 design.
 - `matrix.py` owns deterministic stage-by-stage expansion, canonical digests,
-  capability grouping, row guards, and full-campaign completeness.
+  capability grouping, row guards, full-campaign completeness, and the causal
+  inner-device-within-outer-CUDA-event timer disposition.
 - `analysis.py` owns the five-process paired-IQR rule and held-out prediction
   bound. It intentionally works on process medians rather than treating all
   iterations as independent samples.
@@ -144,6 +145,12 @@ Git. Commit only the frozen
 qualified inventory, compact analysis, and a content-hash artifact manifest.
 Collection re-hashes each completed work directory and refuses partial or
 changed evidence before it writes the merged JSONL file.
+
+Validation preserves raw rows even when a timer boundary is invalid. It emits
+`valid_outside_void_scopes` only when campaign completeness and all other row
+guards hold, names the complete `(cell, timer)` scope, and binds the report to
+the observation-file SHA-256. Analysis must remove every row in a named void
+scope; it may not discard only the repetitions that exposed the violation.
 
 ## H100 implementation status
 

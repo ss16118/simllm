@@ -33,6 +33,7 @@ from examples.nccl_primitive_identification_v1.matrix import (
     inventory_document,
     load_manifest,
     qualify_inventory,
+    timing_scope_voids,
     validate_inventory,
     validate_observation,
 )
@@ -608,11 +609,22 @@ def validate_command(args: argparse.Namespace) -> None:
     inventory = _load_inventory(args.inventory, required_state="capability_qualified")
     rows = _read_jsonl(args.rows)
     failures = completeness_failures(rows, manifest, inventory)
+    void_scopes = timing_scope_voids(rows)
     report = {
         "schema": "simllm-nccl-primitive-validation-v1",
+        "manifest_digest": inventory["manifest_digest"],
+        "inventory_digest": inventory["inventory_digest"],
+        "observations_sha256": hashlib.sha256(args.rows.read_bytes()).hexdigest(),
         "row_count": len(rows),
         "cell_count": inventory["cell_count"],
-        "fatal_guards": "valid" if not failures else "invalid",
+        "fatal_guards": (
+            "invalid"
+            if failures
+            else "valid_outside_void_scopes"
+            if void_scopes
+            else "valid"
+        ),
+        "void_scopes": list(void_scopes),
         "failures": list(failures),
     }
     if args.output:

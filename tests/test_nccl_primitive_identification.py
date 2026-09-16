@@ -28,6 +28,7 @@ from examples.nccl_primitive_identification_v1.matrix import (
     inventory_document,
     load_manifest,
     qualify_inventory,
+    timing_scope_voids,
     validate_inventory,
     validate_observation,
 )
@@ -163,7 +164,11 @@ def _observation(manifest, inventory, cell, process, repetition, timer):
         "family": cell["family"],
         "phase": "ordinary",
         "timer": timer,
-        "units": "ns",
+        "units": {
+            "same_device_interval": "ns",
+            "cuda_event": "us",
+            "host_wall": "us",
+        }[timer],
         "raw_duration": 12.5,
         "observed_local_delay": 0.0,
         "correctness": True,
@@ -190,6 +195,105 @@ def test_observation_guards_and_full_completeness(manifest):
     with pytest.raises(ValueError, match="changed after freeze"):
         validate_observation(changed, small, inventory)
     assert "missing 1 required rows" in completeness_failures(rows[1:], small, inventory)[0]
+
+
+def test_timer_units_and_causal_scope_void_preserve_other_boundaries(manifest):
+    small = _small_contract(manifest)
+    expanded = expand_manifest(small, architectures=("h100",))[0]
+    inventory = qualify_inventory(small, (expanded,), _capability_rows((expanded,)))
+    cell = inventory["cells"][0]
+    rows = [
+        _observation(small, inventory, cell, 0, 0, timer)
+        for timer in small["timing_boundaries"]
+    ]
+    by_timer = {row["timer"]: row for row in rows}
+    by_timer["same_device_interval"]["raw_duration"] = 1_000_000_000.0
+    by_timer["cuda_event"]["raw_duration"] = 10.0
+
+    voids = timing_scope_voids(rows)
+    assert voids == (
+        {
+            "cell_id": cell["cell_id"],
+            "timer": "same_device_interval",
+            "reason": "inner_same_device_interval_exceeds_outer_cuda_event",
+            "violating_rows": 1,
+            "process_ids": [0],
+            "maximum_inner_ns": 1_000_000_000.0,
+            "maximum_outer_ns": 10_000.0,
+        },
+    )
+    assert {row["timer"] for row in rows} - {voids[0]["timer"]} == {"cuda_event"}
+
+    wrong_unit = copy.deepcopy(by_timer["cuda_event"])
+    wrong_unit["units"] = "ns"
+    with pytest.raises(ValueError, match="requires unit 'us'"):
+        validate_observation(wrong_unit, small, inventory)
+
+
+def test_validate_cli_retains_rows_and_reports_complete_timer_void_scope(
+    tmp_path, manifest
+):
+    small = _small_contract(manifest)
+    # Keep the CLI fixture to one cell while retaining the frozen two-process,
+    # two-repetition, two-timer completeness dimensions.
+    expanded = expand_manifest(small, architectures=("h100",))[0]
+    inventory = qualify_inventory(small, (expanded,), _capability_rows((expanded,)))
+    cell = inventory["cells"][0]
+    rows = [
+        _observation(small, inventory, cell, process, repetition, timer)
+        for process in range(small["ordinary_processes_per_cell"])
+        for repetition in range(small["recorded_iterations"])
+        for timer in small["timing_boundaries"]
+    ]
+    # One causal violation voids the entire cell/timer scope. The other seven
+    # raw rows remain present, and the CUDA-event scope stays eligible.
+    rows[0]["raw_duration"] = 1_000_000_000.0
+    manifest_path = tmp_path / "manifest.json"
+    inventory_path = tmp_path / "inventory.json"
+    rows_path = tmp_path / "rows.jsonl"
+    report_path = tmp_path / "validation.json"
+    manifest_path.write_text(json.dumps(small), encoding="utf-8")
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    rows_path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        (
+            sys.executable,
+            str(STUDY / "run_study.py"),
+            "validate",
+            "--manifest",
+            str(manifest_path),
+            "--inventory",
+            str(inventory_path),
+            "--rows",
+            str(rows_path),
+            "--output",
+            str(report_path),
+        ),
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(report_path.read_text())
+    assert report["fatal_guards"] == "valid_outside_void_scopes"
+    assert report["row_count"] == len(rows)
+    assert report["failures"] == []
+    assert report["void_scopes"] == [
+        {
+            "cell_id": cell["cell_id"],
+            "timer": "same_device_interval",
+            "reason": "inner_same_device_interval_exceeds_outer_cuda_event",
+            "violating_rows": 1,
+            "process_ids": [0],
+            "maximum_inner_ns": 1_000_000_000.0,
+            "maximum_outer_ns": 12_500.0,
+        }
+    ]
 
 
 def test_paired_iqr_and_heldout_rules_use_process_summaries():
@@ -616,7 +720,11 @@ elif sys.argv[1] == \"--run\":
                     \"family\": cell[\"family\"],
                     \"phase\": \"ordinary\",
                     \"timer\": timer,
-                    \"units\": \"ns\",
+                    \"units\": {
+                        \"same_device_interval\": \"ns\",
+                        \"cuda_event\": \"us\",
+                        \"host_wall\": \"us\",
+                    }[timer],
                     \"raw_duration\": 10 + repetition,
                     \"observed_local_delay\": 0,
                     \"correctness\": True,
