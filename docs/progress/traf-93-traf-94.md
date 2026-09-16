@@ -91,6 +91,8 @@ The normative inputs are:
 | 2026-09-16 | `traf-94-primitive-measurements` | Full H100 capability sweep and inventory freeze | All 388 capability requests completed: 334 qualified and 54 explicitly rejected. The resulting 768-cell inventory digest is `a0915efc4442aa290aaf82f8de48b3327e9c62d3ff94d4fdd8563fbdb2eaefa7`; the exact hashes and rejected keys are in `h100-capability-freeze.json`. |
 | 2026-09-16 | `traf-94-primitive-measurements` | Ordinary-path smoke work item | Work index 0 completed 20 warmups and 100 measured repetitions, emitting 300 qualified rows across the three required timers; observation SHA-256 `1940c6b100447ef3e0be8bdf9e7ce0e434ec7e79a3146e0e9fd8dc0b34141b72`. This proves the normal runner path, not completion of the 3,840-item campaign. |
 | 2026-09-16 | `traf-94-primitive-measurements` | Focused TRAF-93/TRAF-94 regression suite | 242 passed in 10.57 seconds; Ruff and `git diff --check` passed. |
+| 2026-09-17 | `traf-94-primitive-measurements` | Resumable ordinary-campaign supervisor | Added selected-physical-GPU UUID resolution, stable-idle gating, hash-verified resume, atomic status records, and strict serial execution so two probes cannot contend on the shared NVSwitch. Four focused supervisor tests plus the existing TRAF-94 tests pass: 13 passed in 1.39 seconds; Ruff and `git diff --check` passed. |
+| 2026-09-17 | `traf-94-primitive-measurements` | In-progress frozen ordinary campaign | 467 of 3,840 schedule items have hash-complete work directories and zero have `FAILED.json`. The live supervisor is waiting at work index 467 because external jobs occupy the selected GPUs; it will resume only after the configured stable-idle boundary. This is progress evidence, not a parameter or completion claim. |
 
 ## Commands
 
@@ -128,6 +130,13 @@ ordinary schedule items, collect the five process records per cell, fit only the
 identification stages, and score the held-out confirmation stage. Until those
 steps pass, TRAF-94 has a complete runner and frozen capability inventory but no
 published parameter or accuracy claim.
+
+The active H100 campaign uses the serial `run_campaign.py` supervisor. Its
+external status, work directories, launch ledger, and log are retained under
+`/home/siyshen/workspace/traf94-campaign-final5`; that host-local path is an
+operator handoff locator, not a portable published artifact. The eventual
+merged-artifact manifest will bind the portable result to every completed work
+marker and to the observation-file hash.
 
 ## Handoff notes for future engineers and agents
 

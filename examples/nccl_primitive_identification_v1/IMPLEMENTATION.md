@@ -18,6 +18,11 @@
 - `run_study.py` writes planned and qualified inventories, builds the process
   schedule, invokes one external probe work item, retains stdout/stderr, hashes
   artifacts, and validates merged raw rows.
+- `run_campaign.py` is the node-local serial campaign supervisor. It resumes
+  only hash-verified `COMPLETE.json` work, resolves physical GPU UUIDs before
+  applying `CUDA_VISIBLE_DEVICES`, and requires a stable idle boundary on the
+  selected GPUs before launching each item. It intentionally never overlaps
+  two measurements because nominally disjoint rank sets still share NVSwitch.
 - `PROBE_CONTRACT.md` defines the required source-faithful CUDA/NCCL executable.
 - `nccl-2.31.2-traf94.patch` is the reviewable instrumentation/intervention
   patch for the pinned source, and `SOURCE_PROBE_DESIGN.md` maps each frozen
@@ -109,6 +114,16 @@ python examples/nccl_primitive_identification_v1/run_study.py run-one \
   --output /capture/work \
   --work-index 0
 
+# Node-local bulk execution is serial and safely resumable. The four physical
+# indices may be changed at a work boundary only after rechecking probe identity
+# and recording the device-set transition in the external campaign ledger.
+python examples/nccl_primitive_identification_v1/run_campaign.py \
+  --inventory /capture/qualified-inventory.json \
+  --schedule /capture/schedule.json \
+  --probe examples/nccl_primitive_identification_v1/probe.py \
+  --output /capture/work \
+  --visible-devices 0,1,2,3
+
 python examples/nccl_primitive_identification_v1/run_study.py collect \
   --inventory /capture/qualified-inventory.json \
   --schedule /capture/schedule.json \
@@ -123,7 +138,9 @@ python examples/nccl_primitive_identification_v1/run_study.py validate \
 ```
 
 Each `run-one --work-index N` command is independent and can be assigned to a
-scheduler array. Bulk raw rows belong outside Git. Commit only the frozen
+scheduler array only when the scheduler provides exclusive node/fabric access;
+do not overlap items on a shared NVSwitch node. Bulk raw rows belong outside
+Git. Commit only the frozen
 qualified inventory, compact analysis, and a content-hash artifact manifest.
 Collection re-hashes each completed work directory and refuses partial or
 changed evidence before it writes the merged JSONL file.

@@ -1,6 +1,7 @@
 """Contract tests for the TRAF-94 matrix, evidence gates, and statistics."""
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -33,6 +34,12 @@ from examples.nccl_primitive_identification_v1.matrix import (
 from examples.nccl_primitive_identification_v1.probe import (
     _native_arguments,
     _qualification_failures,
+)
+from examples.nccl_primitive_identification_v1.run_campaign import (
+    _completed_indices,
+    _compute_apps,
+    _device_uuids,
+    _wait_for_idle,
 )
 from examples.nccl_primitive_identification_v1.run_study import _schedule
 
@@ -392,6 +399,118 @@ def test_schedule_keeps_matched_families_adjacent_and_counterbalanced(manifest):
             assert work[position[cell.cell_id]]["pair_order"] == (
                 "AB" if process % 2 == 0 else "BA"
             )
+
+
+def test_campaign_resolves_physical_devices_before_cuda_visibility(monkeypatch):
+    """The idle gate must monitor host UUIDs, not remapped CUDA ordinals."""
+
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=("nvidia-smi",),
+            returncode=0,
+            stdout="0, GPU-a\n2, GPU-c\n4, GPU-e\n5, GPU-f\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _device_uuids((0, 2, 4, 5)) == frozenset(
+        {"GPU-a", "GPU-c", "GPU-e", "GPU-f"}
+    )
+    with pytest.raises(ValueError, match="do not exist"):
+        _device_uuids((0, 7))
+
+
+def test_campaign_compute_app_filter_ignores_unselected_gpus(monkeypatch):
+    """Unrelated contexts are reported only when they touch selected GPUs."""
+
+    def fake_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=("nvidia-smi",),
+            returncode=0,
+            stdout=(
+                "GPU-selected, 41, python, 1024\n"
+                "GPU-other, 42, another process, 2048\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _compute_apps(frozenset({"GPU-selected"})) == [
+        {
+            "gpu_uuid": "GPU-selected",
+            "pid": 41,
+            "process_name": "python",
+            "used_gpu_memory_mib": 1024,
+        }
+    ]
+
+
+def test_campaign_idle_gate_requires_consecutive_empty_samples(monkeypatch):
+    """A single scheduling gap must not be mistaken for a stable idle node."""
+
+    samples = iter(
+        [
+            [{"gpu_uuid": "GPU-a", "pid": 1}],
+            [],
+            [{"gpu_uuid": "GPU-a", "pid": 2}],
+            [],
+            [],
+            [],
+        ]
+    )
+    sleeps = []
+    monkeypatch.setattr(
+        "examples.nccl_primitive_identification_v1.run_campaign._compute_apps",
+        lambda _uuids: next(samples),
+    )
+    monkeypatch.setattr(
+        "examples.nccl_primitive_identification_v1.run_campaign.time.sleep",
+        sleeps.append,
+    )
+
+    _wait_for_idle(
+        monitored_uuids=frozenset({"GPU-a"}),
+        consecutive_samples=3,
+        poll_seconds=0.25,
+    )
+
+    # Six samples require five waits; the final qualifying sample exits without
+    # adding an unnecessary delay before the campaign launches its work item.
+    assert sleeps == [0.25] * 5
+
+
+def test_campaign_resume_accepts_only_hash_verified_work(tmp_path):
+    schedule = {"work": [{"work_index": 0}, {"work_index": 1}]}
+    work = tmp_path / "work-000000"
+    work.mkdir()
+    payload = b"evidence\n"
+    (work / "observations.jsonl").write_bytes(payload)
+    artifacts = {
+        "schema": "simllm-nccl-primitive-artifact-manifest-v1",
+        "artifacts": [
+            {
+                "path": "observations.jsonl",
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ],
+    }
+    artifacts_bytes = (json.dumps(artifacts, indent=2, sort_keys=True) + "\n").encode()
+    (work / "artifacts.json").write_bytes(artifacts_bytes)
+    (work / "COMPLETE.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "manifest_sha256": hashlib.sha256(artifacts_bytes).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _completed_indices(schedule, tmp_path) == {0}
+    (work / "observations.jsonl").write_text("changed\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed after completion"):
+        _completed_indices(schedule, tmp_path)
 
 
 def test_mock_probe_exercises_process_artifacts_collection_and_validation(tmp_path, manifest):
