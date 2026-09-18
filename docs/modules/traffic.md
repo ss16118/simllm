@@ -1834,11 +1834,19 @@ NVSwitch allocation; it does not qualify an eight-GPU switched board.
   service costs with the [standardized primitive experiment](../design/nccl-primitive-identification-v1.md)
   and its [versioned matrix](../../examples/nccl_primitive_identification_v1/manifest.json).
   The design is frozen in `22e9690a`; the source-faithful runner and H100
-  capability inventory are implemented and frozen on the
-  `traf-94-primitive-measurements` branch, while the complete ordinary hardware
-  campaign and parameter analysis remain pending. The surrogate is the declared
-  cycle/memory profile, whose polling and publication effects are not separately
-  identified by collective timing. Build source-faithful ready-peer/delayed-publication,
+  capability inventory, complete ordinary campaign, and locked analysis are
+  recorded in the [H100 results](../../examples/nccl_primitive_identification_v1/RESULTS.md).
+  The v1 execution is complete, but its acceptance outcome is **FAIL**: all
+  3,840 work items and 1,152,000 rows pass the evidence gates outside eight
+  explicitly voided inner-timer scopes, yet only 97 of 441 resolved held-out
+  intervention deltas meet the frozen error bound. The 1,792 measured anchors
+  and 3,012 contrast ledger entries therefore identify the captured primitive
+  surfaces, but the source-constrained additive transfer candidate is not a
+  calibrated channel model and must not be installed as one. A replacement
+  candidate requires a new design and new holdout; v1 may not be refit after
+  opening its confirmation cells. The surrogate is the declared cycle/memory
+  profile, whose polling and publication effects are not separately identified
+  by collective timing. Build source-faithful ready-peer/delayed-publication,
   delayed-consumption, empty/nonempty, copy/reduction and memory-working-set
   probes before expanding to channel/warp/SM sharing. Freeze the expanded,
   capability-qualified cell inventory before ordinary timing. Capture exact
@@ -1850,8 +1858,9 @@ NVSwitch allocation; it does not qualify an eight-GPU switched board.
   intervention deltas within the greater of 10 percent or the frozen
   repeat-spread threshold. TRAF-93 supplies the Simple read branch;
   TRAF-43 retains full collective accuracy and uncertainty qualification,
-  COMP-44 retains host cost. The capability record and one ordinary-path smoke
-  work item are not a new hardware parameter claim.
+  COMP-44 retains host cost. The failed transfer score is evidence against the
+  v1 composition rule, not permission to widen the frozen bar or tune on the
+  opened holdout.
 - TRAF-43 (Precision; P1; M): replace the single-slope collective serializer
   with a regime-aware form. The shipped model charges one
   `bandwidth_bytes_per_second` at every payload, and the

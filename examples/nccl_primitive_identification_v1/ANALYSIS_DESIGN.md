@@ -112,6 +112,38 @@ An empty set of resolved deltas is not a pass. The summary separately reports
 whether any held-out intervention resolved, how many resolved deltas were
 accepted or rejected, and whether every resolved delta passed.
 
+## H100 v1 outcome
+
+The frozen H100 campaign completed all 3,840 work items and collected
+1,152,000 rows from 768 qualified cells. Validation found no completeness or
+identity failure. It retained the raw values but voided eight complete
+`same_device_interval` scopes whose missing source-local start produced an
+epoch-sized value outside the matching CUDA event; the other timer scopes
+remain valid evidence.
+
+The identification-only fit used zero confirmation rows. It produced 1,792
+anchors and 3,012 matched contrasts: 656 resolved as separate terms and 2,356
+remain explicit joint intervals. After that fit was content-locked, the scorer
+opened 1,308 adjacent confirmation interventions. Of 441 resolved deltas, 97
+met the frozen error bound and 344 did not; the remaining 867 were unresolved.
+The published outcome is therefore **FAIL**.
+
+This outcome distinguishes measurement completion from model calibration. The
+primitive anchors and separability ledger are valid within the qualified H100
+scope, but the v1 source-constrained additive interpolation is falsified as a
+general transfer rule. It must not be installed in the channel model, widened
+to pass after inspection, or refit against these opened confirmation cells. A
+successor model needs a new frozen design and independent confirmation data.
+Exact grouped failures and all content hashes are in `RESULTS.md` and
+`h100-results.json`.
+
+For execution scalability, fit and score first reduce the complete ordinary
+capture to one median per `(cell, timer, process)` and reuse that index for all
+anchors and contrasts. This is an implementation optimization only: it applies
+the same row predicates, float conversion, median, pairing, and IQR rule as the
+direct scan, and a regression test requires both paths to return identical
+statistics.
+
 ## Commands
 
 ```bash

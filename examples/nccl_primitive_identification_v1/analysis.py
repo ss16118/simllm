@@ -22,6 +22,14 @@ FIT_SCHEMA = "simllm-nccl-primitive-identification-fit-v1"
 SCORE_SCHEMA = "simllm-nccl-primitive-confirmation-score-v1"
 _UNIT_TO_NS = {"ns": 1.0, "us": 1_000.0, "ps": 0.001}
 
+# Every downstream statistic starts from one median per OS process, cell, and
+# timer.  The campaign contains more than one million repeat rows, so looking
+# up those medians by rescanning the complete row list for every anchor makes a
+# full H100 fit needlessly superlinear.  This immutable-by-convention index is
+# the shared representation used by the fit and scorer; the public helpers can
+# still build a single entry directly for small callers and unit tests.
+_ProcessMedianIndex = Mapping[tuple[str, str], Mapping[int, float]]
+
 
 def _percentile(values: Sequence[float], fraction: float) -> float:
     """Linear-interpolated percentile with explicit small-sample behavior."""
@@ -37,8 +45,15 @@ def _percentile(values: Sequence[float], fraction: float) -> float:
 
 
 def _process_medians(
-    rows: Sequence[Mapping[str, Any]], cell_id: str, timer: str
+    rows: Sequence[Mapping[str, Any]],
+    cell_id: str,
+    timer: str,
+    *,
+    process_medians: _ProcessMedianIndex | None = None,
 ) -> dict[int, float]:
+    if process_medians is not None:
+        return dict(process_medians.get((cell_id, timer), {}))
+
     grouped: dict[int, list[float]] = defaultdict(list)
     for row in rows:
         if (
@@ -51,6 +66,30 @@ def _process_medians(
     return {process: statistics.median(values) for process, values in grouped.items()}
 
 
+def _process_median_index(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[tuple[str, str], dict[int, float]]:
+    """Reduce raw repeats once for all later cell/timer lookups.
+
+    Index construction intentionally applies the same row predicates and
+    ``float`` conversion as :func:`_process_medians`.  It is therefore a pure
+    execution optimization: process medians, paired deltas, IQR thresholds,
+    and the resulting content digests remain byte-for-byte deterministic.
+    """
+
+    grouped: dict[tuple[str, str, int], list[float]] = defaultdict(list)
+    for row in rows:
+        if row.get("phase") != "ordinary" or row.get("qualification") != "qualified":
+            continue
+        key = (str(row["cell_id"]), str(row["timer"]), int(row["process_id"]))
+        grouped[key].append(float(row["raw_duration"]))
+
+    index: dict[tuple[str, str], dict[int, float]] = defaultdict(dict)
+    for (cell_id, timer, process), values in grouped.items():
+        index[(cell_id, timer)][process] = statistics.median(values)
+    return dict(index)
+
+
 def paired_contrast(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -58,11 +97,16 @@ def paired_contrast(
     cell_b: str,
     timer: str,
     expected_processes: int,
+    process_medians: _ProcessMedianIndex | None = None,
 ) -> dict[str, Any]:
     """Apply the frozen paired-median and five-process IQR resolution rule."""
 
-    medians_a = _process_medians(rows, cell_a, timer)
-    medians_b = _process_medians(rows, cell_b, timer)
+    medians_a = _process_medians(
+        rows, cell_a, timer, process_medians=process_medians
+    )
+    medians_b = _process_medians(
+        rows, cell_b, timer, process_medians=process_medians
+    )
     expected = set(range(expected_processes))
     if set(medians_a) != expected or set(medians_b) != expected:
         raise ValueError("contrast does not contain every expected process in both cells")
@@ -132,10 +176,13 @@ def _summary(
     cell_id: str,
     timer: str,
     expected_processes: int,
+    process_medians: _ProcessMedianIndex | None = None,
 ) -> dict[str, Any]:
     """Summarize one cell from independent process medians, never raw repeats."""
 
-    medians = _process_medians(rows, cell_id, timer)
+    medians = _process_medians(
+        rows, cell_id, timer, process_medians=process_medians
+    )
     expected = set(range(expected_processes))
     if set(medians) != expected:
         raise ValueError(
@@ -190,6 +237,7 @@ def _paired_record(
     factor: str,
     level_a: Any,
     level_b: Any,
+    process_medians: _ProcessMedianIndex | None = None,
 ) -> dict[str, Any]:
     contrast = paired_contrast(
         rows,
@@ -197,6 +245,7 @@ def _paired_record(
         cell_b=str(cell_b["cell_id"]),
         timer=timer,
         expected_processes=expected_processes,
+        process_medians=process_medians,
     )
     return {
         "stage": cell_a["stage"],
@@ -220,6 +269,7 @@ def _matched_family_contrasts(
     family_a: str,
     family_b: str,
     factor: str,
+    process_medians: _ProcessMedianIndex | None = None,
 ) -> list[dict[str, Any]]:
     groups: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for cell in cells:
@@ -238,6 +288,7 @@ def _matched_family_contrasts(
                 factor=factor,
                 level_a=family_a,
                 level_b=family_b,
+                process_medians=process_medians,
             )
         )
     return records
@@ -250,6 +301,7 @@ def _axis_contrasts(
     timer: str,
     expected_processes: int,
     axis: str,
+    process_medians: _ProcessMedianIndex | None = None,
 ) -> list[dict[str, Any]]:
     """Compare adjacent levels while holding every other request field fixed."""
 
@@ -276,6 +328,7 @@ def _axis_contrasts(
                     factor=axis,
                     level_a=cell_a["requested"][axis],
                     level_b=cell_b["requested"][axis],
+                    process_medians=process_medians,
                 )
             )
     return records
@@ -307,6 +360,11 @@ def fit_identification(
     identification_ids = {cell["cell_id"] for cell in identification_cells}
     fit_rows = [row for row in normalized if row["cell_id"] in identification_ids]
 
+    # All anchors and matched contrasts consume the same process medians.
+    # Materializing them once prevents every cell from rescanning the full
+    # campaign while preserving the frozen process-first aggregation rule.
+    process_medians = _process_median_index(fit_rows)
+
     anchors = []
     contrasts = []
     for timer in manifest["timing_boundaries"]:
@@ -331,6 +389,7 @@ def fit_identification(
                         cell_id=cell["cell_id"],
                         timer=timer,
                         expected_processes=expected_processes,
+                        process_medians=process_medians,
                     ),
                 }
             )
@@ -348,6 +407,7 @@ def fit_identification(
                 family_a="already_ready",
                 family_b="delayed_publication",
                 factor="publication_state",
+                process_medians=process_medians,
             )
         )
         for stage in ("data_work", "sharing"):
@@ -360,6 +420,7 @@ def fit_identification(
                     family_a="copy",
                     family_b="sum",
                     factor="reduction",
+                    process_medians=process_medians,
                 )
             )
         contrasts.extend(
@@ -369,6 +430,7 @@ def fit_identification(
                 timer=timer,
                 expected_processes=expected_processes,
                 axis="working_set",
+                process_medians=process_medians,
             )
         )
         for axis in ("delay_cycles", "reservations"):
@@ -379,6 +441,7 @@ def fit_identification(
                     timer=timer,
                     expected_processes=expected_processes,
                     axis=axis,
+                    process_medians=process_medians,
                 )
             )
         for axis in ("active_channels", "available_sms", "working_warps"):
@@ -389,6 +452,7 @@ def fit_identification(
                     timer=timer,
                     expected_processes=expected_processes,
                     axis=axis,
+                    process_medians=process_medians,
                 )
             )
 
@@ -651,6 +715,11 @@ def score_confirmations(
 
     expected_processes = int(manifest["ordinary_processes_per_cell"])
     normalized = _rows_in_nanoseconds(rows)
+    # Confirmation scoring compares many adjacent interventions against the
+    # same held-out rows.  Reuse the process-first reduction exactly as the
+    # identification fit does instead of scanning the complete capture for
+    # each comparison.
+    process_medians = _process_median_index(normalized)
     void_scopes = timing_scope_voids(rows)
     void_keys = {(row["cell_id"], row["timer"]) for row in void_scopes}
     cells = [cell for cell in inventory["cells"] if cell["stage"] == "confirmation"]
@@ -696,6 +765,7 @@ def score_confirmations(
                         cell_b=cell_b["cell_id"],
                         timer=timer,
                         expected_processes=expected_processes,
+                        process_medians=process_medians,
                     )
                     prediction_a = predictions[(cell_a["cell_id"], timer)]
                     prediction_b = predictions[(cell_b["cell_id"], timer)]

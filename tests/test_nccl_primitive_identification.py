@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STUDY = ROOT / "examples" / "nccl_primitive_identification_v1"
 
 from examples.nccl_primitive_identification_v1.analysis import (
+    _process_median_index,
     fit_identification,
     paired_contrast,
     predict_confirmation_cell,
@@ -329,6 +330,19 @@ def test_paired_iqr_and_heldout_rules_use_process_summaries():
     assert contrast["paired_median_delta"] == 30
     assert contrast["resolved"] is True
     assert contrast["interpretation"] == "separate_term"
+
+    # The production fit precomputes this index once for the million-row H100
+    # capture.  Its lookup path must remain exactly equivalent to the direct
+    # scan retained for small callers and tests.
+    indexed_contrast = paired_contrast(
+        rows,
+        cell_a="a",
+        cell_b="b",
+        timer="cuda_event",
+        expected_processes=5,
+        process_medians=_process_median_index(rows),
+    )
+    assert indexed_contrast == contrast
 
     assert (
         score_confirmation(
