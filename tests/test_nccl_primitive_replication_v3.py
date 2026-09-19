@@ -24,10 +24,10 @@ def test_frozen_replication_plan_and_table_have_reviewed_identities():
 
     validate_inventory(plan)
     assert content_digest(manifest) == (
-        "175bc6541ed1e524d84f0cbdb39a2080691ad14da4a7e495ac40acc9dd7b3cd4"
+        "fcfb930b006d14860659e68e1917b141c2866c89e142a010fd86949611e788f1"
     )
     assert plan["inventory_digest"] == (
-        "1eb571ec187ccfe15428565f3efe6ecf8eeca59d4a4526d83f596816bc1d959d"
+        "40cb2875a3800fbfc116041a3601701d75cf5adeea04494b2df6de6d6e241bd6"
     )
     assert len(cells) == plan["cell_count"] == 128
     assert len(capability_keys(cells)) == 32
@@ -35,7 +35,7 @@ def test_frozen_replication_plan_and_table_have_reviewed_identities():
     unsigned = dict(model)
     assert unsigned.pop("model_digest") == content_digest(unsigned)
     assert model["model_digest"] == (
-        "3135bad0b2b3d2da74323cbd7fceedefe292be0281fcadd1c4df3fbfff194b6e"
+        "acd919dd3c1ee237f0e6f107b024fcc0396fa8710f2aace7261146cb9eb00ff6"
     )
     assert len(model["holdout_predictions"]) == 112
     assert len(model["unpredicted_planned_cells"]) == 16

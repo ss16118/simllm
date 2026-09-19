@@ -3,7 +3,7 @@
   "status": "design_frozen_before_v3_replication",
   "owner_task": "TRAF-94",
   "study": "nccl_primitive_replication_v3",
-  "source_commit": "fa6460a36c3b8e18cef9d206f7531f3debe5dc46",
+  "source_commit": "7b83616df3ae082a1f32bb74c27458bfe8153a13",
   "architectures": [
     "h100"
   ],

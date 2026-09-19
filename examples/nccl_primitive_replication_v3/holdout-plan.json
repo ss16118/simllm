@@ -3074,9 +3074,9 @@
       "stage": "confirmation"
     }
   ],
-  "inventory_digest": "1eb571ec187ccfe15428565f3efe6ecf8eeca59d4a4526d83f596816bc1d959d",
-  "manifest_digest": "175bc6541ed1e524d84f0cbdb39a2080691ad14da4a7e495ac40acc9dd7b3cd4",
+  "inventory_digest": "40cb2875a3800fbfc116041a3601701d75cf5adeea04494b2df6de6d6e241bd6",
+  "manifest_digest": "fcfb930b006d14860659e68e1917b141c2866c89e142a010fd86949611e788f1",
   "schema": "simllm-nccl-primitive-inventory-v1",
-  "source_commit": "fa6460a36c3b8e18cef9d206f7531f3debe5dc46",
+  "source_commit": "7b83616df3ae082a1f32bb74c27458bfe8153a13",
   "state": "planned"
 }
