@@ -65,3 +65,12 @@ levels. It does not validate interpolation to unseen controls, a different
 GPU generation, arbitrary NCCL collectives, or DeepEP. A `FAIL` means even
 this bounded calibration table is not stable enough under the frozen rule and
 must remain open.
+
+## Completed outcome
+
+The fresh campaign completed all 560 work items and collected 168,000 rows
+with zero active execution failures, contamination markers, validation
+failures, or void timer scopes. One post-run-contaminated attempt was retained
+only in quarantine and its frozen index reran cleanly. The exact table accepts
+184 of 195 resolved interventions and rejects 11, so the immutable outcome is
+`FAIL`. See [RESULTS.md](RESULTS.md) for evidence identities and scope.

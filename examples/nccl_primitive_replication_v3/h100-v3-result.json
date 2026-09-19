@@ -1,0 +1,60 @@
+{
+  "schema": "simllm-nccl-primitive-replication-result-v3",
+  "task": "TRAF-94",
+  "outcome": "FAIL",
+  "claim_scope": "same_node_same_probe_same_control_repeatability",
+  "manifest_digest": "fcfb930b006d14860659e68e1917b141c2866c89e142a010fd86949611e788f1",
+  "planned_inventory_digest": "40cb2875a3800fbfc116041a3601701d75cf5adeea04494b2df6de6d6e241bd6",
+  "model_digest": "acd919dd3c1ee237f0e6f107b024fcc0396fa8710f2aace7261146cb9eb00ff6",
+  "training_evidence": {
+    "v2_outcome": "FAIL",
+    "v2_score_digest": "e3375317f6cc83a8beee733467c352e3f1a9b46599042f64bd2cc8587adf1704",
+    "v2_observations_sha256": "7c0299623ef0531f132fb5203ca97057dc3f6798fa094688aaab9a76f94e723b"
+  },
+  "capability": {
+    "requested_keys": 32,
+    "qualified_keys": 28,
+    "rejected_keys": 4,
+    "evidence_mode": "exact replay for identical controls and probe identity",
+    "results_sha256": "7364ccff17dff22e85f4aafa83f805dc08183b52fe479f333c5555731087b9ae"
+  },
+  "qualified_inventory": {
+    "cell_count": 112,
+    "inventory_digest": "acb5c801afc0dd0e2e58699346afd912fbfe9775657e3eceb588fe1af04e3101",
+    "file_sha256": "13e53aef42636377eabe25c54f0aaffd6b146e2b1587e1a55bbcd199f585f0a0"
+  },
+  "execution": {
+    "work_items": 560,
+    "completed_work_items": 560,
+    "failed_work_items": 0,
+    "active_contaminated_work_items": 0,
+    "quarantined_attempts": 1,
+    "row_count": 168000,
+    "schedule_digest": "b68ac62cf8ed9c670264655625bede3f533149136429f02505393fd22b5289f1",
+    "schedule_sha256": "d60001ce6cebda2c088030d80d3a88d84850ae3fa40bfbc9b0194d5ec2e83e37",
+    "observations_sha256": "e8da409b02c8b919179b48829b63bda6e1585fa576f59a2b941d10e661947b88",
+    "artifact_manifest_sha256": "7cf0b34d52cfc015d21cab69290efa1ff8e1a486613511c6286cb6d24ba4b701"
+  },
+  "validation": {
+    "fatal_guards": "valid",
+    "failures": 0,
+    "void_scopes": 0,
+    "file_sha256": "8633e3364b88a83698c5f57aef9ba7a7a25d6ea0a53abdeef04e57df6ef7ab22"
+  },
+  "score": {
+    "intervention_count": 816,
+    "resolved_interventions": 195,
+    "unresolved_interventions": 621,
+    "accepted_resolved_interventions": 184,
+    "rejected_resolved_interventions": 11,
+    "score_digest": "212a925888f9260b4ac8452ad644267a620fe63ef78fbaec92a492cbe5ff34a2",
+    "file_sha256": "f16a4f6234085ce76e3891dd2898a82cc7b7f58421ca947cf6b35e7013536430"
+  },
+  "rejected_factor_counts": {
+    "ranks": 5,
+    "useful_bytes_per_channel": 5,
+    "active_channels": 1
+  },
+  "interpretation": "Exact lookup improves substantially over sparse interpolation, but independent process launches do not reproduce every resolved intervention within the frozen ten-percent-or-repeat-spread bound. The largest residual drift is in SIMPLE buffered rank scaling, followed by LL and LL128 payload scaling.",
+  "result_digest": "92596f09a941baa6c63976d62b22d005c49eca458310ed5163d5b5f6acf5263e"
+}

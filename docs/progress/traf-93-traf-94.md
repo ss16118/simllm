@@ -60,7 +60,8 @@ The normative inputs are:
   prediction checks.
 - [x] Freeze the capability-qualified expanded H100 inventory before ordinary
   timing. H100 is an extension; it is not silently labeled A100 or GH200.
-- [ ] Run and publish the hardware campaign.
+- [x] Run and publish the hardware campaign, including immutable negative
+  results when the frozen accuracy rule is not met.
 
 ## Verification log
 
@@ -167,6 +168,7 @@ The normative inputs are:
 | 2026-09-19 | `traf-94-v2-model` | V3 work-376 contention rejection and rank-derived device guard | After 376 accepted attempts, the immediate post-run guard rejected work index 376 when external user `knakaji`'s `.conda/bin/python` training process appeared on selected GPU 0 (and its paired context occupied GPU 1). The rejected attempt and marker are preserved under `quarantine/postcheck-device-transition-20260919/work-000376-attempt1` and removed from active evidence. Because the qualified v3 inventory has maximum rank three and only GPUs 2,4,5 remained idle, the supervisor's old hard-coded four-device prerequisite was replaced by a validated `max(requested.ranks)` requirement. This executor correction changes no frozen request, prediction, schedule, timer, or acceptance rule; five focused supervisor tests pass. Work index 376 must rerun after a fresh stable-idle gate on GPUs 2,4,5. |
 | 2026-09-19 | `traf-94-v2-model` | V3 400-work milestone | External work later occupied GPUs 2 and 4, so the resumable supervisor remained at its pre-run idle gate until GPUs 5,6,7 became an idle trio. Work index 376 then reran cleanly, and the authoritative status plus independent `COMPLETE.json` count reached 401 of 560 accepted attempts at the checkpoint. Active work contains zero `FAILED.json` and zero `CONTAMINATED.json` markers; the single rejected attempt remains only in quarantine. |
 | 2026-09-19 | `traf-94-v2-model` | V3 500-work milestone | The authoritative status and independent `COMPLETE.json` count reached 503 of 560 accepted attempts at the checkpoint. The 400-to-500 interval completed on GPUs 5,6,7 with zero `FAILED.json` and zero active `CONTAMINATED.json` markers; the single rejected work-376 attempt remains preserved only in quarantine. |
+| 2026-09-19 | `traf-94-v2-model` | V3 execution, validation, and locked score complete | The resumed supervisor completed all 560 frozen work items. Active evidence has exactly 560 work directories and 560 `COMPLETE.json` markers, zero `FAILED.json`, and zero `CONTAMINATED.json`; the one rejected work-376 attempt remains only in quarantine. Collection produced 168,000 fresh rows with SHA-256 `e8da409b02c8b919179b48829b63bda6e1585fa576f59a2b941d10e661947b88`; validation found zero failures and zero void scopes. Of 816 interventions, 195 resolve, 184 satisfy the unchanged bound, and 11 do not. The immutable outcome is `FAIL`, score digest `212a925888f9260b4ac8452ad644267a620fe63ef78fbaec92a492cbe5ff34a2`, compact result digest `92596f09a941baa6c63976d62b22d005c49eca458310ed5163d5b5f6acf5263e`. |
 
 ## Commands
 
@@ -199,18 +201,20 @@ capability requests and froze 768 qualified cells. Its compact record is
 requests, native stdout/stderr, qualified inventory, schedule, and observation
 rows remain in the external capture area named by their SHA-256 hashes.
 
-The remaining hardware work is deliberately separate: execute all 3,840 frozen
-ordinary schedule items, collect the five process records per cell, fit only the
-identification stages, and score the held-out confirmation stage. Until those
-steps pass, TRAF-94 has a complete runner and frozen capability inventory but no
-published parameter or accuracy claim.
+The H100 execution work is complete and published. The v1 additive candidate,
+v2 sparse interaction tensor, and v3 exact-control replication table all remain
+immutable `FAIL` results under their prospectively frozen rules. This closes
+the runner/campaign/publication work without claiming a calibrated point model:
+the evidence instead shows that a follow-up must model cross-run uncertainty or
+execution state and obtain another independent holdout.
 
-The active H100 campaign uses the serial `run_campaign.py` supervisor. Its
-external status, work directories, launch ledger, and log are retained under
-`/home/siyshen/workspace/traf94-campaign-final5`; that host-local path is an
-operator handoff locator, not a portable published artifact. The eventual
-merged-artifact manifest will bind the portable result to every completed work
-marker and to the observation-file hash.
+Host-local evidence is retained under
+`/home/siyshen/workspace/traf94-campaign-final5`,
+`/home/siyshen/workspace/traf94-v2-campaign`, and
+`/home/siyshen/workspace/traf94-v3-campaign`. These paths are operator handoff
+locators, not portable artifacts. The committed compact results bind each
+qualified inventory, schedule, merged-artifact manifest, observation capture,
+validation report, and complete score by digest or file SHA-256.
 
 ## Handoff notes for future engineers and agents
 

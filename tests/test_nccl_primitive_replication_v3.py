@@ -61,3 +61,17 @@ def test_every_prediction_is_an_exact_v2_process_median_lookup():
     assert all(cell["protocol"] == "SIMPLE" for cell in absent)
     assert all(cell["simple_placement"] == "buffered_read" for cell in absent)
     assert all(cell["requested"]["ranks"] == 3 for cell in absent)
+
+
+def test_published_v3_failure_is_self_digested_and_scoped():
+    result = json.loads((STUDY / "h100-v3-result.json").read_text(encoding="utf-8"))
+    unsigned = dict(result)
+    assert unsigned.pop("result_digest") == content_digest(unsigned)
+    assert result["outcome"] == "FAIL"
+    assert result["claim_scope"] == "same_node_same_probe_same_control_repeatability"
+    assert result["score"]["resolved_interventions"] == 195
+    assert result["score"]["accepted_resolved_interventions"] == 184
+    assert result["score"]["rejected_resolved_interventions"] == 11
+    assert result["validation"]["failures"] == 0
+    assert result["validation"]["void_scopes"] == 0
+    assert result["execution"]["quarantined_attempts"] == 1
