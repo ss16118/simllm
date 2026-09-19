@@ -99,3 +99,12 @@ the shared NVSwitch node.
 The locked model contains 112 predictions and names 16 intentionally
 unpredicted planned cells. These identities are committed before capability or
 ordinary v2 execution.
+
+## Completed outcome
+
+The qualified campaign completed all 560 work items and collected 168,000 rows
+with no failed work, contamination marker, validation failure, or void timer
+scope. The locked tensor nevertheless rejected 45 of 225 resolved
+interventions, so its immutable outcome is `FAIL`. See [RESULTS.md](RESULTS.md)
+for the evidence identities and failure breakdown. This result is retained as
+opened training evidence; it is never relabeled or refitted.

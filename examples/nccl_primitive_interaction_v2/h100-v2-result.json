@@ -1,0 +1,56 @@
+{
+  "schema": "simllm-nccl-primitive-interaction-result-v2",
+  "task": "TRAF-94",
+  "outcome": "FAIL",
+  "manifest_digest": "2bf7455bf91bf6081b11ed82652e5258826cf59486c30e618cbcda2a7e662942",
+  "planned_inventory_digest": "0495e9583c5692ab229f3aa3bef93951a96a1a06ee7ddf40cc2ff6ce1a983cef",
+  "model_digest": "fba72bb7fe28e112cf4f2b73ca7381d5ea9ec9c55e29a1f4d1a4f6cfb1e15c0e",
+  "capability": {
+    "requested_keys": 32,
+    "qualified_keys": 28,
+    "rejected_keys": 4,
+    "rejected_scope": "rank-3 SIMPLE buffered_read",
+    "rejected_reason": "correctness mismatch at element 0: got 4, expected 6",
+    "results_sha256": "7364ccff17dff22e85f4aafa83f805dc08183b52fe479f333c5555731087b9ae"
+  },
+  "qualified_inventory": {
+    "cell_count": 112,
+    "inventory_digest": "1cb2137bfbe4dcb6043485a570bc6f54177a51c646946db3da4fbaebfeee70ec",
+    "file_sha256": "933a993c0a53a2904069eb6f3cda2674d95139c68ab409a3c581d87658ab8180"
+  },
+  "execution": {
+    "work_items": 560,
+    "completed_work_items": 560,
+    "failed_work_items": 0,
+    "contaminated_work_items": 0,
+    "row_count": 168000,
+    "schedule_digest": "033d8a3c06e699da2c6ddd8cbb03490a22ea04bc1ee448d59a98114697cc9800",
+    "schedule_sha256": "de65fd05ed0ece2fa0944e313df337adebba63ac3ea86f2fe65178431ae70e70",
+    "observations_sha256": "7c0299623ef0531f132fb5203ca97057dc3f6798fa094688aaab9a76f94e723b",
+    "artifact_manifest_sha256": "2cb9784ac7a125ce3907a07466f74ae69ae40d2b3e06c0e77073edaacad25a65"
+  },
+  "validation": {
+    "fatal_guards": "valid",
+    "failures": 0,
+    "void_scopes": 0,
+    "file_sha256": "ccfca243f511c8e56d8d44a8a3d9d0396866c4e275830467988432274d53916e"
+  },
+  "score": {
+    "intervention_count": 816,
+    "resolved_interventions": 225,
+    "unresolved_interventions": 591,
+    "accepted_resolved_interventions": 180,
+    "rejected_resolved_interventions": 45,
+    "score_digest": "e3375317f6cc83a8beee733467c352e3f1a9b46599042f64bd2cc8587adf1704",
+    "file_sha256": "afea093d4c5d40b10df5e943b4cef5137d3fbf5390f660c72f3b26dc23fd1fca"
+  },
+  "dominant_rejected_factors": {
+    "useful_bytes_per_channel": 16,
+    "ranks": 15,
+    "active_channels": 10,
+    "delay_cycles": 3,
+    "available_sms": 1
+  },
+  "interpretation": "The non-separable tensor improves over v1 but is not calibrated under the frozen all-resolved-interventions rule. Sparse linear interpolation crosses runtime regime changes, especially for SIMPLE buffered and LL payload scaling.",
+  "result_digest": "380cb4e7c26b98cc66305b25094d7ce1fcdf3d49c69bb4b38bfe33040a5856b5"
+}

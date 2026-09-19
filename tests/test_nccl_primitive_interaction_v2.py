@@ -62,6 +62,18 @@ def test_frozen_holdout_and_model_have_exact_reviewed_identities():
             assert all(row["weight"] >= 0.0 for row in timer["contributors"])
 
 
+def test_published_v2_failure_is_self_digested_and_not_softened():
+    result = json.loads((STUDY / "h100-v2-result.json").read_text(encoding="utf-8"))
+    unsigned = dict(result)
+    assert unsigned.pop("result_digest") == content_digest(unsigned)
+    assert result["outcome"] == "FAIL"
+    assert result["score"]["resolved_interventions"] == 225
+    assert result["score"]["accepted_resolved_interventions"] == 180
+    assert result["score"]["rejected_resolved_interventions"] == 45
+    assert result["validation"]["failures"] == 0
+    assert result["validation"]["void_scopes"] == 0
+
+
 def test_tensor_interpolation_retains_full_five_axis_interaction():
     anchors = []
     for coordinate in itertools.product((0.0, 1.0), repeat=len(AXES)):
