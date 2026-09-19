@@ -25,6 +25,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
 
+from examples.nccl_primitive_identification_v1.matrix import validate_inventory
 from examples.nccl_primitive_identification_v1.run_study import (
     _load_schedule,
     _verify_work_artifacts,
@@ -164,6 +165,29 @@ def _completed_indices(schedule: dict[str, Any], output: Path) -> set[int]:
     return completed
 
 
+def _required_device_count(inventory_path: Path) -> int:
+    """Return the largest rank count in the frozen qualified inventory.
+
+    The original supervisor conservatively required four visible GPUs because
+    the v1 inventory included four-rank cells.  Later frozen inventories may
+    contain fewer ranks after capability qualification.  Requiring an unused
+    fourth GPU can unnecessarily couple a three-rank measurement to an
+    unrelated job, while accepting fewer devices than a scheduled cell needs
+    would change or fail that cell.  Deriving the exact lower bound from the
+    validated inventory preserves both isolation and frozen request semantics.
+    """
+
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    validate_inventory(inventory)
+    ranks = [cell.get("requested", {}).get("ranks") for cell in inventory["cells"]]
+    if not ranks or any(isinstance(value, bool) or not isinstance(value, int) for value in ranks):
+        raise ValueError("the frozen inventory must declare integer ranks for every cell")
+    required = max(ranks)
+    if required < 1:
+        raise ValueError("the frozen inventory requires a positive rank count")
+    return required
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, required=True)
@@ -185,8 +209,15 @@ def main() -> None:
 
     schedule = _load_schedule(args.schedule)
     visible_indices = tuple(int(value) for value in args.visible_devices.split(","))
-    if len(visible_indices) < 4 or len(set(visible_indices)) != len(visible_indices):
-        raise ValueError("the frozen campaign needs at least four unique CUDA devices")
+    required_devices = _required_device_count(args.inventory)
+    if (
+        len(visible_indices) < required_devices
+        or len(set(visible_indices)) != len(visible_indices)
+    ):
+        raise ValueError(
+            "the frozen campaign needs at least "
+            f"{required_devices} unique CUDA devices"
+        )
     monitored_uuids = _device_uuids(visible_indices)
     args.output.mkdir(parents=True, exist_ok=True)
     status_path = args.output.parent / "campaign-status.json"

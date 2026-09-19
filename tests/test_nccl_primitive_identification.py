@@ -48,6 +48,7 @@ from examples.nccl_primitive_identification_v1.run_campaign import (
     _completed_indices,
     _compute_apps,
     _device_uuids,
+    _required_device_count,
     _wait_for_idle,
 )
 from examples.nccl_primitive_identification_v1.run_study import _schedule
@@ -821,6 +822,34 @@ def test_campaign_resolves_physical_devices_before_cuda_visibility(monkeypatch):
     )
     with pytest.raises(ValueError, match="do not exist"):
         _device_uuids((0, 7))
+
+
+def test_campaign_derives_required_devices_from_frozen_inventory(tmp_path):
+    """An unused fourth GPU must not block a qualified three-rank campaign."""
+
+    inventory = {
+        "schema": "simllm-nccl-primitive-inventory-v1",
+        "state": "planned",
+        "manifest_digest": "manifest",
+        "source_commit": "source",
+        "cell_count": 2,
+        "cells": [
+            {"cell_id": "rank-two", "requested": {"ranks": 2}},
+            {"cell_id": "rank-three", "requested": {"ranks": 3}},
+        ],
+    }
+    inventory["inventory_digest"] = content_digest(inventory)
+    path = tmp_path / "inventory.json"
+    path.write_text(json.dumps(inventory), encoding="utf-8")
+
+    assert _required_device_count(path) == 3
+
+    inventory["cells"][1]["requested"]["ranks"] = "three"
+    inventory.pop("inventory_digest")
+    inventory["inventory_digest"] = content_digest(inventory)
+    path.write_text(json.dumps(inventory), encoding="utf-8")
+    with pytest.raises(ValueError, match="integer ranks"):
+        _required_device_count(path)
 
 
 def test_campaign_compute_app_filter_ignores_unselected_gpus(monkeypatch):
