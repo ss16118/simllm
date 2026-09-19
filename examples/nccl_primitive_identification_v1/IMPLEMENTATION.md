@@ -31,7 +31,10 @@
   selected GPUs before launching each item. The minimum visible-device count
   is derived from the maximum `requested.ranks` in the validated qualified
   inventory, so an unused GPU cannot make a lower-rank campaign depend on an
-  unrelated workload. It intentionally never overlaps
+  unrelated workload. When `--device-cohort` is supplied, the supervisor also
+  verifies the exact ordered physical GPU UUIDs before timing and creates a
+  self-digested `campaign-provenance.json`; a resume with another cohort,
+  ordering, inventory or schedule is rejected. It intentionally never overlaps
   two measurements because nominally disjoint rank sets still share NVSwitch.
   Its first post-run action rechecks selected-GPU contexts. A newly visible
   external context writes `CONTAMINATED.json`, stops the campaign, and makes

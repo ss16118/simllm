@@ -25,7 +25,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
 
-from examples.nccl_primitive_identification_v1.matrix import validate_inventory
+from examples.nccl_primitive_identification_v1.matrix import (
+    content_digest,
+    validate_inventory,
+)
 from examples.nccl_primitive_identification_v1.run_study import (
     _load_schedule,
     _verify_work_artifacts,
@@ -40,8 +43,8 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _device_uuids(indices: tuple[int, ...]) -> frozenset[str]:
-    """Resolve physical CUDA indices before visibility remaps their ordinals."""
+def _device_uuid_sequence(indices: tuple[int, ...]) -> tuple[str, ...]:
+    """Resolve physical indices in rank order before CUDA remaps ordinals."""
 
     completed = subprocess.run(
         (
@@ -63,7 +66,13 @@ def _device_uuids(indices: tuple[int, ...]) -> frozenset[str]:
     missing = set(indices) - set(by_index)
     if missing:
         raise ValueError(f"selected CUDA devices do not exist: {sorted(missing)}")
-    return frozenset(by_index[index] for index in indices)
+    return tuple(by_index[index] for index in indices)
+
+
+def _device_uuids(indices: tuple[int, ...]) -> frozenset[str]:
+    """Return the selected UUID set for compatibility with the idle monitor."""
+
+    return frozenset(_device_uuid_sequence(indices))
 
 
 def _compute_apps(monitored_uuids: frozenset[str]) -> list[dict[str, Any]]:
@@ -188,6 +197,50 @@ def _required_device_count(inventory_path: Path) -> int:
     return required
 
 
+def _load_device_cohort(
+    path: Path,
+    *,
+    selected_uuids: tuple[str, ...],
+    required_devices: int,
+) -> dict[str, Any]:
+    """Validate an exact, ordered physical-GPU cohort before any timing.
+
+    UUIDs, rather than host indices, are authoritative because indices can be
+    remapped across boots or administrative changes.  Order is also part of
+    the contract: CUDA ordinal zero becomes rank zero in the native probe.
+    """
+
+    cohort = json.loads(path.read_text(encoding="utf-8"))
+    if cohort.get("schema") != "simllm-nccl-primitive-device-cohort-v1":
+        raise ValueError("unsupported device cohort schema")
+    unsigned = dict(cohort)
+    recorded = unsigned.pop("cohort_digest", None)
+    if recorded != content_digest(unsigned):
+        raise ValueError("device cohort digest does not match its content")
+    devices = cohort.get("physical_devices")
+    if not isinstance(devices, list):
+        raise TypeError("device cohort physical_devices must be a list")
+    expected_uuids = tuple(str(device.get("uuid", "")) for device in devices)
+    if len(expected_uuids) != required_devices:
+        raise ValueError("device cohort size differs from the frozen maximum ranks")
+    if expected_uuids != selected_uuids:
+        raise ValueError("selected CUDA device UUID order differs from the frozen cohort")
+    if cohort.get("maximum_ranks") != required_devices:
+        raise ValueError("device cohort maximum_ranks differs from the inventory")
+    return cohort
+
+
+def _freeze_campaign_provenance(path: Path, value: dict[str, Any]) -> None:
+    """Create once or require byte-equivalent provenance on every resume."""
+
+    if path.exists():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing != value:
+            raise ValueError("campaign resume attempted with different provenance")
+        return
+    _write_json_atomic(path, value)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, required=True)
@@ -198,6 +251,11 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--idle-samples", type=int, default=3)
     parser.add_argument("--idle-poll-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--device-cohort",
+        type=Path,
+        help="Optional self-digested ordered GPU UUID cohort required for every work item.",
+    )
     parser.add_argument(
         "--visible-devices",
         default="0,1,2,3",
@@ -218,9 +276,29 @@ def main() -> None:
             "the frozen campaign needs at least "
             f"{required_devices} unique CUDA devices"
         )
-    monitored_uuids = _device_uuids(visible_indices)
+    selected_uuid_sequence = _device_uuid_sequence(visible_indices)
+    monitored_uuids = frozenset(selected_uuid_sequence)
     args.output.mkdir(parents=True, exist_ok=True)
     status_path = args.output.parent / "campaign-status.json"
+    if args.device_cohort is not None:
+        cohort = _load_device_cohort(
+            args.device_cohort,
+            selected_uuids=selected_uuid_sequence,
+            required_devices=required_devices,
+        )
+        inventory = json.loads(args.inventory.read_text(encoding="utf-8"))
+        provenance: dict[str, Any] = {
+            "schema": "simllm-nccl-primitive-campaign-provenance-v1",
+            "device_cohort_digest": cohort["cohort_digest"],
+            "ordered_device_uuids": list(selected_uuid_sequence),
+            "visible_device_indices_at_launch": list(visible_indices),
+            "inventory_digest": inventory["inventory_digest"],
+            "schedule_digest": schedule["schedule_digest"],
+        }
+        provenance["provenance_digest"] = content_digest(provenance)
+        _freeze_campaign_provenance(
+            args.output.parent / "campaign-provenance.json", provenance
+        )
     completed = _completed_indices(schedule, args.output)
     total = len(schedule["work"])
     _write_json_atomic(

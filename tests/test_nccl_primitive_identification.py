@@ -47,7 +47,10 @@ from examples.nccl_primitive_identification_v1.publish_results import (
 from examples.nccl_primitive_identification_v1.run_campaign import (
     _completed_indices,
     _compute_apps,
+    _device_uuid_sequence,
     _device_uuids,
+    _freeze_campaign_provenance,
+    _load_device_cohort,
     _required_device_count,
     _wait_for_idle,
 )
@@ -820,6 +823,7 @@ def test_campaign_resolves_physical_devices_before_cuda_visibility(monkeypatch):
     assert _device_uuids((0, 2, 4, 5)) == frozenset(
         {"GPU-a", "GPU-c", "GPU-e", "GPU-f"}
     )
+    assert _device_uuid_sequence((4, 0, 2)) == ("GPU-e", "GPU-a", "GPU-c")
     with pytest.raises(ValueError, match="do not exist"):
         _device_uuids((0, 7))
 
@@ -850,6 +854,41 @@ def test_campaign_derives_required_devices_from_frozen_inventory(tmp_path):
     path.write_text(json.dumps(inventory), encoding="utf-8")
     with pytest.raises(ValueError, match="integer ranks"):
         _required_device_count(path)
+
+
+def test_campaign_freezes_ordered_device_cohort_and_resume_provenance(tmp_path):
+    cohort = {
+        "schema": "simllm-nccl-primitive-device-cohort-v1",
+        "maximum_ranks": 3,
+        "physical_devices": [
+            {"uuid": "GPU-a"},
+            {"uuid": "GPU-b"},
+            {"uuid": "GPU-c"},
+        ],
+    }
+    cohort["cohort_digest"] = content_digest(cohort)
+    cohort_path = tmp_path / "cohort.json"
+    cohort_path.write_text(json.dumps(cohort), encoding="utf-8")
+
+    loaded = _load_device_cohort(
+        cohort_path,
+        selected_uuids=("GPU-a", "GPU-b", "GPU-c"),
+        required_devices=3,
+    )
+    assert loaded["cohort_digest"] == cohort["cohort_digest"]
+    with pytest.raises(ValueError, match="UUID order"):
+        _load_device_cohort(
+            cohort_path,
+            selected_uuids=("GPU-b", "GPU-a", "GPU-c"),
+            required_devices=3,
+        )
+
+    provenance_path = tmp_path / "campaign-provenance.json"
+    provenance = {"schema": "test", "cohort": cohort["cohort_digest"]}
+    _freeze_campaign_provenance(provenance_path, provenance)
+    _freeze_campaign_provenance(provenance_path, copy.deepcopy(provenance))
+    with pytest.raises(ValueError, match="different provenance"):
+        _freeze_campaign_provenance(provenance_path, {"schema": "changed"})
 
 
 def test_campaign_compute_app_filter_ignores_unselected_gpus(monkeypatch):

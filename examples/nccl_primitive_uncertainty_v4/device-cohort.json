@@ -1,0 +1,23 @@
+{
+  "schema": "simllm-nccl-primitive-device-cohort-v1",
+  "architecture": "h100",
+  "topology": "single-node NVL8",
+  "probe_identity_digest": "8612974c171d7de4d39fbecef383d4ecf8402754c1a368d95fb911b5ad8423e8",
+  "rank_mapping": "CUDA ordinal order follows physical_devices list order",
+  "maximum_ranks": 3,
+  "physical_devices": [
+    {
+      "index_hint": 0,
+      "uuid": "GPU-f12b352d-67a0-1d58-8495-4107dda6ae60"
+    },
+    {
+      "index_hint": 1,
+      "uuid": "GPU-a8753aab-880c-167e-7f42-8600d1420228"
+    },
+    {
+      "index_hint": 2,
+      "uuid": "GPU-56b312d0-39be-7d2e-67b0-060811725963"
+    }
+  ],
+  "cohort_digest": "8a128df1db88810302ccd24ca5645c249b5a07eeb90045dab23dd5d1961db6c6"
+}
